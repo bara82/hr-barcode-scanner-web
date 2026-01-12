@@ -23,8 +23,8 @@
       <h1 class="title">Scan Result</h1>
       <div id="result-fields"></div>
 
-      <!-- ✅ QR CODE SECTION -->
-      <h2 style="margin-top:2rem;">Revolut / SEPA QR</h2>
+      <!-- ✅ QR SECTION -->
+      <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
       <div id="qr"></div>
       <p style="font-size:0.9rem; opacity:0.7;">
         Scan in Revolut → Payments → QR
@@ -70,23 +70,42 @@
       if (amountString.length !== 15) return amountString;
       const cents = parseInt(amountString, 10);
       if (isNaN(cents)) return amountString;
+
       const euros = cents / 100.0;
       return {
-        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR' }),
-        copy: euros.toFixed(2)
+        display: euros.toLocaleString('hr-HR', {
+          style: 'currency',
+          currency: 'EUR',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }),
+        copy: euros.toFixed(2) // ← ZA QR
       };
+    }
+
+    let copyPopoverTimeout;
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        clearTimeout(copyPopoverTimeout);
+        const popover = document.getElementById('copied-popover');
+        popover.showPopover();
+        copyPopoverTimeout = setTimeout(() => {
+          popover.hidePopover();
+        }, 1500);
+      });
     }
 
     function fixEncoding(text) {
       const map = {
         'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
         'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
-        'Å½': 'Ž','Å¾': 'ž',
+        'Å½': 'Ž','Å¾': 'ž'
       };
-      return text.replace(new RegExp(Object.keys(map).join('|'), 'g'), m => map[m]).toUpperCase();
+      const regex = new RegExp(Object.keys(map).join('|'), 'g');
+      return text.replace(regex, m => map[m]).toUpperCase();
     }
 
-    function buildEpcQr({ name, iban, amount, reference }) {
+    function buildEpcQr(name, iban, amount, reference) {
       return [
         "BCD",
         "001",
@@ -103,10 +122,10 @@
     }
 
     function renderQr(epcText) {
-      const qr = document.getElementById('qr');
-      qr.innerHTML = "";
+      const qrEl = document.getElementById('qr');
+      qrEl.innerHTML = "";
       QRCode.toCanvas(epcText, { errorCorrectionLevel: "M" }, (err, canvas) => {
-        if (!err) qr.appendChild(canvas);
+        if (!err) qrEl.appendChild(canvas);
       });
     }
 
@@ -114,34 +133,64 @@
       document.getElementById('scanning-page').style.display = 'none';
       document.getElementById('results-page').style.display = 'block';
 
-      const lines = resultText.split('\n');
+      const rawDataLines = resultText.split('\n');
       const resultFields = document.getElementById('result-fields');
       resultFields.innerHTML = '';
 
-      let data = {};
+      let visibleDataLines = [];
+      let qrData = {};
 
-      for (let i = 0; i < lines.length; i++) {
-        const label = labelForLine(i);
+      for (let index = 0; index < rawDataLines.length; index++) {
+        const label = labelForLine(index);
         if (!label) continue;
 
-        let value = lines[i];
-        if (label === 'Amount') {
-          const amt = formatAmount(value);
-          data.amount = amt.copy;
-          value = amt.display;
-        }
-        if (label === 'Recipient') data.name = value;
-        if (label === 'Recipient\'s IBAN') data.iban = value;
-        if (label === 'Reference') data.reference = value;
+        const line = rawDataLines[index];
+        let displayValue = line;
+        let copyValue = line;
 
-        const field = document.createElement('div');
-        field.className = 'result-field';
-        field.innerHTML = `<label>${label}</label><div>${value}</div>`;
-        resultFields.appendChild(field);
+        if (label === 'Amount') {
+          const amountValue = formatAmount(line);
+          displayValue = amountValue.display;
+          copyValue = amountValue.copy;
+          qrData.amount = amountValue.copy;
+        }
+        if (label === 'Recipient') qrData.name = line;
+        if (label === 'Recipient\'s IBAN') qrData.iban = line;
+        if (label === 'Reference') qrData.reference = line;
+
+        visibleDataLines.push(copyValue);
+
+        const fieldContainer = document.createElement('div');
+        fieldContainer.className = 'result-field';
+        fieldContainer.dataset.copyValue = copyValue;
+
+        const labelElement = document.createElement('label');
+        labelElement.className = 'result-label';
+        labelElement.textContent = label;
+
+        const valueElement = document.createElement('div');
+        valueElement.className = 'result-value';
+        valueElement.textContent = displayValue;
+
+        fieldContainer.appendChild(labelElement);
+        fieldContainer.appendChild(valueElement);
+        fieldContainer.addEventListener('click', function () {
+          copyToClipboard(this.dataset.copyValue);
+        });
+
+        resultFields.appendChild(fieldContainer);
       }
 
-      if (data.name && data.iban) {
-        renderQr(buildEpcQr(data));
+      resultFields.dataset.visibleData = visibleDataLines.join('\n');
+
+      if (qrData.name && qrData.iban && qrData.amount) {
+        const epc = buildEpcQr(
+          qrData.name,
+          qrData.iban,
+          qrData.amount,
+          qrData.reference
+        );
+        renderQr(epc);
       }
     }
 
@@ -149,22 +198,37 @@
       if (isScanning) return;
       isScanning = true;
       showScanningPage();
-      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result) => {
-        if (result) {
-          codeReader.reset();
-          isScanning = false;
-          showResultsPage(fixEncoding(result.text));
+
+      codeReader.decodeFromInputVideoDeviceContinuously(
+        selectedDeviceId,
+        'video',
+        (result) => {
+          if (result) {
+            codeReader.reset();
+            isScanning = false;
+            showResultsPage(fixEncoding(result.text));
+          }
         }
-      });
+      );
     }
 
-    window.addEventListener('load', () => {
+    window.addEventListener('load', function () {
       codeReader = new ZXing.BrowserPDF417Reader();
-      codeReader.getVideoInputDevices().then(devices => {
-        selectedDeviceId = devices[0].deviceId;
-        startScanning();
-        document.getElementById('scanAgainButton').onclick = startScanning;
-      });
+      codeReader.getVideoInputDevices()
+        .then((devices) => {
+          selectedDeviceId = devices[0].deviceId;
+          startScanning();
+
+          document.getElementById('scanAgainButton')
+            .addEventListener('click', startScanning);
+
+          document.getElementById('copyAllButton')
+            .addEventListener('click', () => {
+              const visibleData =
+                document.getElementById('result-fields').dataset.visibleData;
+              if (visibleData) copyToClipboard(visibleData);
+            });
+        });
     });
   </script>
 </body>
