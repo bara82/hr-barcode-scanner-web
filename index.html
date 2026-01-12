@@ -6,8 +6,8 @@
   <title>Invoice Scanner</title>
   <link rel="stylesheet" href="styles.css">
 
-  <!-- QR generator -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <!-- OFFLINE QR library (copied from EPC-QR-Code-Offline-Generator repo) -->
+  <script src="assets/qrcode.min.js"></script>
 </head>
 <body>
   <main class="wrapper">
@@ -23,12 +23,10 @@
       <h1 class="title">Scan Result</h1>
       <div id="result-fields"></div>
 
-      <!-- ✅ QR SECTION -->
+      <!-- QR -->
       <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
       <div id="qr"></div>
-      <p style="font-size:0.9rem; opacity:0.7;">
-        Scan in Revolut → Payments → QR
-      </p>
+      <p style="font-size:0.9rem; opacity:0.7;">Scan in Revolut → Payments → QR</p>
 
       <button class="button-large" id="copyAllButton">Copy All</button>
       <a class="button-large" id="scanAgainButton">Scan Another</a>
@@ -43,7 +41,9 @@
 
   <div popover id="copied-popover">Copied to clipboard</div>
 
+  <!-- Scanner lib (online). Ako želiš FULL offline i za skener, i ovo trebaš vendorati lokalno -->
   <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+
   <script>
     let codeReader;
     let selectedDeviceId;
@@ -67,20 +67,17 @@
     }
 
     function formatAmount(amountString) {
+      // 15-digit cents
       if (amountString.length !== 15) return amountString;
+
       const cents = parseInt(amountString, 10);
       if (isNaN(cents)) return amountString;
 
       const euros = cents / 100.0;
       return {
-        display: euros.toLocaleString('hr-HR', {
-          style: 'currency',
-          currency: 'EUR',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        }),
-        copy: euros.toFixed(2) // ← ZA QR
-      };
+        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        copy: euros.toFixed(2) // IMPORTANT: "5.06" (dot), for EPC payload
+      }
     }
 
     let copyPopoverTimeout;
@@ -89,9 +86,7 @@
         clearTimeout(copyPopoverTimeout);
         const popover = document.getElementById('copied-popover');
         popover.showPopover();
-        copyPopoverTimeout = setTimeout(() => {
-          popover.hidePopover();
-        }, 1500);
+        copyPopoverTimeout = setTimeout(() => popover.hidePopover(), 1500);
       });
     }
 
@@ -99,34 +94,62 @@
       const map = {
         'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
         'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
-        'Å½': 'Ž','Å¾': 'ž'
-      };
-      const regex = new RegExp(Object.keys(map).join('|'), 'g');
-      return text.replace(regex, m => map[m]).toUpperCase();
+        'Å½': 'Ž','Å¾': 'ž',
+      }
+      const keys = Object.keys(map);
+      const regex = new RegExp(keys.join('|'), 'g');
+      return text.replace(regex, match => map[match]).toUpperCase();
     }
 
-    function buildEpcQr(name, iban, amount, reference) {
-      return [
+    // EPC payload (NO extra newline at end)
+    function buildEpcPayload({ name, iban, amount, reference }) {
+      const lines = [
         "BCD",
         "001",
         "1",
         "SCT",
-        "",
-        name,
-        iban,
+        "",             // BIC optional
+        name || "",
+        iban || "",
         amount ? `EUR${amount}` : "",
-        "",
+        "",             // purpose code optional
         reference || "",
-        ""
-      ].join("\n");
+        ""              // note to originator optional
+      ];
+      // important: join with \n but don't add extra newline beyond join
+      return lines.join("\n");
     }
 
+    // Render QR using offline library.
+    // Support both common APIs:
+    // - davidshim qrcodejs: new QRCode(el, {text, width, height, ...})
+    // - node-qrcode browser build: QRCode.toCanvas / toDataURL
     function renderQr(epcText) {
-      const qrEl = document.getElementById('qr');
-      qrEl.innerHTML = "";
-      QRCode.toCanvas(epcText, { errorCorrectionLevel: "M" }, (err, canvas) => {
-        if (!err) qrEl.appendChild(canvas);
-      });
+      const host = document.getElementById('qr');
+      host.innerHTML = "";
+
+      // If library exposes QRCode.toCanvas (node-qrcode style)
+      if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
+        const canvas = document.createElement("canvas");
+        host.appendChild(canvas);
+        window.QRCode.toCanvas(canvas, epcText, { errorCorrectionLevel: "M", width: 300 }, (err) => {
+          if (err) host.innerHTML = "<p style='color:#c00'>QR error</p>";
+        });
+        return;
+      }
+
+      // If library is qrcodejs (davidshim) style
+      if (window.QRCode && typeof window.QRCode === "function") {
+        new window.QRCode(host, {
+          text: epcText,
+          width: 300,
+          height: 300,
+          correctLevel: (window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined)
+        });
+        return;
+      }
+
+      host.innerHTML = "<p style='color:#c00'>QR library not loaded (assets/qrcode.min.js)</p>";
     }
 
     function showResultsPage(resultText) {
@@ -145,20 +168,19 @@
         if (!label) continue;
 
         const line = rawDataLines[index];
-        let displayValue = line;
-        let copyValue = line;
+        const amountValue = label === 'Amount' ? formatAmount(line) : null;
 
-        if (label === 'Amount') {
-          const amountValue = formatAmount(line);
-          displayValue = amountValue.display;
-          copyValue = amountValue.copy;
-          qrData.amount = amountValue.copy;
-        }
+        const displayValue = amountValue ? amountValue.display : line;
+        const copyValue = amountValue ? amountValue.copy : line;
+
+        // Collect for Copy All
+        visibleDataLines.push(copyValue);
+
+        // Collect for QR
+        if (label === 'Amount' && amountValue && typeof amountValue.copy === "string") qrData.amount = amountValue.copy;
         if (label === 'Recipient') qrData.name = line;
         if (label === 'Recipient\'s IBAN') qrData.iban = line;
         if (label === 'Reference') qrData.reference = line;
-
-        visibleDataLines.push(copyValue);
 
         const fieldContainer = document.createElement('div');
         fieldContainer.className = 'result-field';
@@ -174,61 +196,57 @@
 
         fieldContainer.appendChild(labelElement);
         fieldContainer.appendChild(valueElement);
-        fieldContainer.addEventListener('click', function () {
+
+        fieldContainer.addEventListener('click', function() {
           copyToClipboard(this.dataset.copyValue);
         });
 
         resultFields.appendChild(fieldContainer);
       }
 
+      // Store visible data for "Copy All"
       resultFields.dataset.visibleData = visibleDataLines.join('\n');
 
-      if (qrData.name && qrData.iban && qrData.amount) {
-        const epc = buildEpcQr(
-          qrData.name,
-          qrData.iban,
-          qrData.amount,
-          qrData.reference
-        );
-        renderQr(epc);
+      // Generate QR
+      if (qrData.name && qrData.iban) {
+        const payload = buildEpcPayload(qrData);
+        renderQr(payload);
       }
     }
 
     function startScanning() {
       if (isScanning) return;
+
       isScanning = true;
       showScanningPage();
 
-      codeReader.decodeFromInputVideoDeviceContinuously(
-        selectedDeviceId,
-        'video',
-        (result) => {
-          if (result) {
-            codeReader.reset();
-            isScanning = false;
-            showResultsPage(fixEncoding(result.text));
-          }
+      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
+        if (result) {
+          codeReader.reset();
+          isScanning = false;
+          showResultsPage(fixEncoding(result.text));
         }
-      );
+      });
     }
 
     window.addEventListener('load', function () {
       codeReader = new ZXing.BrowserPDF417Reader();
       codeReader.getVideoInputDevices()
-        .then((devices) => {
-          selectedDeviceId = devices[0].deviceId;
+        .then((videoInputDevices) => {
+          selectedDeviceId = videoInputDevices[0].deviceId;
+
           startScanning();
 
-          document.getElementById('scanAgainButton')
-            .addEventListener('click', startScanning);
+          document.getElementById('scanAgainButton').addEventListener('click', () => {
+            startScanning();
+          });
 
-          document.getElementById('copyAllButton')
-            .addEventListener('click', () => {
-              const visibleData =
-                document.getElementById('result-fields').dataset.visibleData;
-              if (visibleData) copyToClipboard(visibleData);
-            });
-        });
+          document.getElementById('copyAllButton').addEventListener('click', () => {
+            const visibleData = document.getElementById('result-fields').dataset.visibleData;
+            if (visibleData) copyToClipboard(visibleData);
+          });
+        })
+        .catch((err) => console.error(err));
     });
   </script>
 </body>
