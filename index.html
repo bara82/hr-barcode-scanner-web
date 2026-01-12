@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Invoice Scanner</title>
   <link rel="stylesheet" href="styles.css">
+
+  <!-- QR generator -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
   <main class="wrapper">
@@ -19,6 +22,14 @@
     <section class="container" id="results-page">
       <h1 class="title">Scan Result</h1>
       <div id="result-fields"></div>
+
+      <!-- ✅ QR CODE SECTION -->
+      <h2 style="margin-top:2rem;">Revolut / SEPA QR</h2>
+      <div id="qr"></div>
+      <p style="font-size:0.9rem; opacity:0.7;">
+        Scan in Revolut → Payments → QR
+      </p>
+
       <button class="button-large" id="copyAllButton">Copy All</button>
       <a class="button-large" id="scanAgainButton">Scan Another</a>
     </section>
@@ -29,11 +40,11 @@
       </section>
     </footer>
   </main>
-  
+
   <div popover id="copied-popover">Copied to clipboard</div>
-  
-  <script type="text/javascript" src="https://unpkg.com/@zxing/library@0.21.3"></script>
-  <script type="text/javascript">
+
+  <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+  <script>
     let codeReader;
     let selectedDeviceId;
     let isScanning = false;
@@ -56,107 +67,89 @@
     }
 
     function formatAmount(amountString) {
-      // Amount is a 15-digit string padded with 0s on the left, representing euro cents
-      if (amountString.length !== 15) {
-        return amountString;
-      }
-      
+      if (amountString.length !== 15) return amountString;
       const cents = parseInt(amountString, 10);
-      if (isNaN(cents)) {
-        return amountString;
-      }
-      
+      if (isNaN(cents)) return amountString;
       const euros = cents / 100.0;
       return {
-        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        copy: euros.toLocaleString('hr-HR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      }
-    }
-
-    let copyPopoverTimeout;
-    function copyToClipboard(text) {
-      navigator.clipboard.writeText(text).then(() => {
-        clearTimeout(copyPopoverTimeout);
-        const popover = document.getElementById('copied-popover');
-        popover.showPopover();
-        copyPopoverTimeout = setTimeout(() => {
-          popover.hidePopover();
-        }, 1500);
-      });
+        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR' }),
+        copy: euros.toFixed(2)
+      };
     }
 
     function fixEncoding(text) {
       const map = {
-        'ÄŒ': 'Č',
-        'Ä': 'č',
-        'Ä†': 'Ć',
-        'Ä‡': 'ć',
-        'Ä': 'Đ',
-        'Ä‘': 'đ',
-        'Å ': 'Š',
-        'Å¡': 'š',
-        'Å½': 'Ž',
-        'Å¾': 'ž',
-      }
+        'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
+        'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
+        'Å½': 'Ž','Å¾': 'ž',
+      };
+      return text.replace(new RegExp(Object.keys(map).join('|'), 'g'), m => map[m]).toUpperCase();
+    }
 
-      const keys = Object.keys(map);
-      const regex = new RegExp(keys.join('|'), 'g');
-      return text.replace(regex, match => map[match]).toUpperCase();
+    function buildEpcQr({ name, iban, amount, reference }) {
+      return [
+        "BCD",
+        "001",
+        "1",
+        "SCT",
+        "",
+        name,
+        iban,
+        amount ? `EUR${amount}` : "",
+        "",
+        reference || "",
+        ""
+      ].join("\n");
+    }
+
+    function renderQr(epcText) {
+      const qr = document.getElementById('qr');
+      qr.innerHTML = "";
+      QRCode.toCanvas(epcText, { errorCorrectionLevel: "M" }, (err, canvas) => {
+        if (!err) qr.appendChild(canvas);
+      });
     }
 
     function showResultsPage(resultText) {
       document.getElementById('scanning-page').style.display = 'none';
       document.getElementById('results-page').style.display = 'block';
-      
-      const rawDataLines = resultText.split('\n');
+
+      const lines = resultText.split('\n');
       const resultFields = document.getElementById('result-fields');
       resultFields.innerHTML = '';
-      
-      let visibleDataLines = [];
-      
-      for (let index = 0; index < rawDataLines.length; index++) {
-        const label = labelForLine(index);
-        if (label) {
-          const line = rawDataLines[index];
-          const amountValue = label === 'Amount' ? formatAmount(line) : null;
-          const displayValue = amountValue ? amountValue.display : line;
-          const copyValue = amountValue ? amountValue.copy : line;
-          visibleDataLines.push(copyValue);
-          
-          const fieldContainer = document.createElement('div');
-          fieldContainer.className = 'result-field';
-          fieldContainer.dataset.copyValue = copyValue;
-          
-          const labelElement = document.createElement('label');
-          labelElement.className = 'result-label';
-          labelElement.textContent = label;
-          
-          const valueElement = document.createElement('div');
-          valueElement.className = 'result-value';
-          valueElement.textContent = displayValue;
-          
-          fieldContainer.appendChild(labelElement);
-          fieldContainer.appendChild(valueElement);
-          
-          fieldContainer.addEventListener('click', function() {
-            copyToClipboard(this.dataset.copyValue);
-          });
-          
-          resultFields.appendChild(fieldContainer);
+
+      let data = {};
+
+      for (let i = 0; i < lines.length; i++) {
+        const label = labelForLine(i);
+        if (!label) continue;
+
+        let value = lines[i];
+        if (label === 'Amount') {
+          const amt = formatAmount(value);
+          data.amount = amt.copy;
+          value = amt.display;
         }
+        if (label === 'Recipient') data.name = value;
+        if (label === 'Recipient\'s IBAN') data.iban = value;
+        if (label === 'Reference') data.reference = value;
+
+        const field = document.createElement('div');
+        field.className = 'result-field';
+        field.innerHTML = `<label>${label}</label><div>${value}</div>`;
+        resultFields.appendChild(field);
       }
-      
-      // Store visible data for "Copy All" button
-      resultFields.dataset.visibleData = visibleDataLines.join('\n');
+
+      if (data.name && data.iban) {
+        renderQr(buildEpcQr(data));
+      }
     }
 
     function startScanning() {
       if (isScanning) return;
-      
       isScanning = true;
       showScanningPage();
-      
-      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
+      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result) => {
         if (result) {
           codeReader.reset();
           isScanning = false;
@@ -165,27 +158,13 @@
       });
     }
 
-    window.addEventListener('load', function () {
+    window.addEventListener('load', () => {
       codeReader = new ZXing.BrowserPDF417Reader();
-      codeReader.getVideoInputDevices()
-        .then((videoInputDevices) => {
-          selectedDeviceId = videoInputDevices[0].deviceId;
-
-          startScanning();
-          document.getElementById('scanAgainButton').addEventListener('click', () => {
-            startScanning();
-          });
-
-          document.getElementById('copyAllButton').addEventListener('click', () => {
-            const visibleData = document.getElementById('result-fields').dataset.visibleData;
-            if (visibleData) {
-              copyToClipboard(visibleData);
-            }
-          });
-        })
-        .catch((err) => {
-          console.error(err);
-        });
+      codeReader.getVideoInputDevices().then(devices => {
+        selectedDeviceId = devices[0].deviceId;
+        startScanning();
+        document.getElementById('scanAgainButton').onclick = startScanning;
+      });
     });
   </script>
 </body>
