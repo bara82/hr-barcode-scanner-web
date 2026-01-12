@@ -3,8 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Skener uplatnica</title>
+  <title>Invoice Scanner</title>
   <link rel="stylesheet" href="styles.css">
+
+  <!-- QR generator -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
   <main class="wrapper">
@@ -19,14 +22,14 @@
     <section class="container" id="results-page">
       <h1 class="title">Scan Result</h1>
       <div id="result-fields"></div>
-      
-      <!-- QR Code Display -->
-      <div id="qr-container" style="margin: 20px 0; text-align: center;">
-        <h2 style="font-size: 1.2em; margin-bottom: 10px;">EPC QR Code for Payment</h2>
-        <canvas id="qr-canvas"></canvas>
-        <p style="font-size: 0.9em; color: #666; margin-top: 10px;">Scan with Revolut or any banking app</p>
-      </div>
-      
+
+      <!-- ✅ QR SECTION -->
+      <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
+      <div id="qr"></div>
+      <p style="font-size:0.9rem; opacity:0.7;">
+        Scan in Revolut → Payments → QR
+      </p>
+
       <button class="button-large" id="copyAllButton">Copy All</button>
       <a class="button-large" id="scanAgainButton">Scan Another</a>
     </section>
@@ -37,12 +40,11 @@
       </section>
     </footer>
   </main>
-  
+
   <div popover id="copied-popover">Copied to clipboard</div>
-  
-  <script type="text/javascript" src="https://unpkg.com/@zxing/library@0.21.3"></script>
-  <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script type="text/javascript">
+
+  <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+  <script>
     let codeReader;
     let selectedDeviceId;
     let isScanning = false;
@@ -65,22 +67,20 @@
     }
 
     function formatAmount(amountString) {
-      // Amount is a 15-digit string padded with 0s on the left, representing euro cents
-      if (amountString.length !== 15) {
-        return amountString;
-      }
-      
+      if (amountString.length !== 15) return amountString;
       const cents = parseInt(amountString, 10);
-      if (isNaN(cents)) {
-        return amountString;
-      }
-      
+      if (isNaN(cents)) return amountString;
+
       const euros = cents / 100.0;
       return {
-        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        copy: euros.toLocaleString('hr-HR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        raw: euros.toFixed(2)
-      }
+        display: euros.toLocaleString('hr-HR', {
+          style: 'currency',
+          currency: 'EUR',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        }),
+        copy: euros.toFixed(2) // ← ZA QR
+      };
     }
 
     let copyPopoverTimeout;
@@ -97,166 +97,137 @@
 
     function fixEncoding(text) {
       const map = {
-        'ÄŒ': 'Č',
-        'Ä': 'č',
-        'Ä†': 'Ć',
-        'Ä‡': 'ć',
-        'Ä': 'Đ',
-        'Ä'': 'đ',
-        'Å ': 'Š',
-        'Å¡': 'š',
-        'Å½': 'Ž',
-        'Å¾': 'ž',
-      }
-
-      const keys = Object.keys(map);
-      const regex = new RegExp(keys.join('|'), 'g');
-      return text.replace(regex, match => map[match]).toUpperCase();
+        'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
+        'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
+        'Å½': 'Ž','Å¾': 'ž'
+      };
+      const regex = new RegExp(Object.keys(map).join('|'), 'g');
+      return text.replace(regex, m => map[m]).toUpperCase();
     }
 
-    function formatIBAN(iban) {
-      // Remove spaces and convert to uppercase
-      return iban.replace(/\s/g, '').toUpperCase();
+    function buildEpcQr(name, iban, amount, reference) {
+      return [
+        "BCD",
+        "001",
+        "1",
+        "SCT",
+        "",
+        name,
+        iban,
+        amount ? `EUR${amount}` : "",
+        "",
+        reference || "",
+        ""
+      ].join("\n");
     }
 
-    function truncateText(text, maxLength) {
-      if (!text) return '';
-      return text.length > maxLength ? text.substring(0, maxLength) : text;
-    }
-
-    function generateEPCQRCode(rawDataLines) {
-      const canvas = document.getElementById('qr-canvas');
-      const ctx = canvas.getContext('2d');
-      
-      // Clear previous QR code
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Extract data from scanned invoice
-      const amountObj = rawDataLines[2] ? formatAmount(rawDataLines[2]) : null;
-      const amount = amountObj ? amountObj.raw : '0.00';
-      const recipient = truncateText(rawDataLines[6] || '', 70);
-      const iban = formatIBAN(rawDataLines[9] || '');
-      const reference = truncateText(rawDataLines[11] || '', 140);
-      
-      // Create EPC QR Code format (SEPA Credit Transfer)
-      // Format specification: https://www.europeanpaymentscouncil.eu/document-library/guidance-documents/quick-response-code-guidelines-enable-data-capture-initiation
-      const epcData = [
-        'BCD',           // Service Tag
-        '002',           // Version
-        '1',             // Character set (1 = UTF-8)
-        'SCT',           // Identification (SEPA Credit Transfer)
-        '',              // BIC (optional, leave empty)
-        recipient,       // Beneficiary name (max 70 chars)
-        iban,            // Beneficiary account (IBAN)
-        'EUR' + amount,  // Amount in EUR with currency code
-        '',              // Purpose (optional)
-        reference,       // Structured reference (max 140 chars)
-        '',              // Unstructured remittance (optional, max 140 chars)
-        ''               // Beneficiary to originator information (optional)
-      ].join('\n');
-      
-      // Generate QR code with EPC data
-      QRCode.toCanvas(canvas, epcData, {
-        width: 300,
-        margin: 2,
-        errorCorrectionLevel: 'M',
-        color: {
-          dark: '#000000',
-          light: '#FFFFFF'
-        }
-      }, function (error) {
-        if (error) {
-          console.error('QR Code generation error:', error);
-        } else {
-          console.log('EPC QR Code generated successfully');
-        }
+    function renderQr(epcText) {
+      const qrEl = document.getElementById('qr');
+      qrEl.innerHTML = "";
+      QRCode.toCanvas(epcText, { errorCorrectionLevel: "M" }, (err, canvas) => {
+        if (!err) qrEl.appendChild(canvas);
       });
     }
 
     function showResultsPage(resultText) {
       document.getElementById('scanning-page').style.display = 'none';
       document.getElementById('results-page').style.display = 'block';
-      
+
       const rawDataLines = resultText.split('\n');
       const resultFields = document.getElementById('result-fields');
       resultFields.innerHTML = '';
-      
+
       let visibleDataLines = [];
-      
+      let qrData = {};
+
       for (let index = 0; index < rawDataLines.length; index++) {
         const label = labelForLine(index);
-        if (label) {
-          const line = rawDataLines[index];
-          const amountValue = label === 'Amount' ? formatAmount(line) : null;
-          const displayValue = amountValue ? amountValue.display : line;
-          const copyValue = amountValue ? amountValue.copy : line;
-          visibleDataLines.push(copyValue);
-          
-          const fieldContainer = document.createElement('div');
-          fieldContainer.className = 'result-field';
-          fieldContainer.dataset.copyValue = copyValue;
-          
-          const labelElement = document.createElement('label');
-          labelElement.className = 'result-label';
-          labelElement.textContent = label;
-          
-          const valueElement = document.createElement('div');
-          valueElement.className = 'result-value';
-          valueElement.textContent = displayValue;
-          
-          fieldContainer.appendChild(labelElement);
-          fieldContainer.appendChild(valueElement);
-          
-          fieldContainer.addEventListener('click', function() {
-            copyToClipboard(this.dataset.copyValue);
-          });
-          
-          resultFields.appendChild(fieldContainer);
+        if (!label) continue;
+
+        const line = rawDataLines[index];
+        let displayValue = line;
+        let copyValue = line;
+
+        if (label === 'Amount') {
+          const amountValue = formatAmount(line);
+          displayValue = amountValue.display;
+          copyValue = amountValue.copy;
+          qrData.amount = amountValue.copy;
         }
+        if (label === 'Recipient') qrData.name = line;
+        if (label === 'Recipient\'s IBAN') qrData.iban = line;
+        if (label === 'Reference') qrData.reference = line;
+
+        visibleDataLines.push(copyValue);
+
+        const fieldContainer = document.createElement('div');
+        fieldContainer.className = 'result-field';
+        fieldContainer.dataset.copyValue = copyValue;
+
+        const labelElement = document.createElement('label');
+        labelElement.className = 'result-label';
+        labelElement.textContent = label;
+
+        const valueElement = document.createElement('div');
+        valueElement.className = 'result-value';
+        valueElement.textContent = displayValue;
+
+        fieldContainer.appendChild(labelElement);
+        fieldContainer.appendChild(valueElement);
+        fieldContainer.addEventListener('click', function () {
+          copyToClipboard(this.dataset.copyValue);
+        });
+
+        resultFields.appendChild(fieldContainer);
       }
-      
-      // Store visible data for "Copy All" button
+
       resultFields.dataset.visibleData = visibleDataLines.join('\n');
-      
-      // Generate EPC QR code
-      generateEPCQRCode(rawDataLines);
+
+      if (qrData.name && qrData.iban && qrData.amount) {
+        const epc = buildEpcQr(
+          qrData.name,
+          qrData.iban,
+          qrData.amount,
+          qrData.reference
+        );
+        renderQr(epc);
+      }
     }
 
     function startScanning() {
       if (isScanning) return;
-      
       isScanning = true;
       showScanningPage();
-      
-      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
-        if (result) {
-          codeReader.reset();
-          isScanning = false;
-          showResultsPage(fixEncoding(result.text));
+
+      codeReader.decodeFromInputVideoDeviceContinuously(
+        selectedDeviceId,
+        'video',
+        (result) => {
+          if (result) {
+            codeReader.reset();
+            isScanning = false;
+            showResultsPage(fixEncoding(result.text));
+          }
         }
-      });
+      );
     }
 
     window.addEventListener('load', function () {
       codeReader = new ZXing.BrowserPDF417Reader();
       codeReader.getVideoInputDevices()
-        .then((videoInputDevices) => {
-          selectedDeviceId = videoInputDevices[0].deviceId;
-
+        .then((devices) => {
+          selectedDeviceId = devices[0].deviceId;
           startScanning();
-          document.getElementById('scanAgainButton').addEventListener('click', () => {
-            startScanning();
-          });
 
-          document.getElementById('copyAllButton').addEventListener('click', () => {
-            const visibleData = document.getElementById('result-fields').dataset.visibleData;
-            if (visibleData) {
-              copyToClipboard(visibleData);
-            }
-          });
-        })
-        .catch((err) => {
-          console.error(err);
+          document.getElementById('scanAgainButton')
+            .addEventListener('click', startScanning);
+
+          document.getElementById('copyAllButton')
+            .addEventListener('click', () => {
+              const visibleData =
+                document.getElementById('result-fields').dataset.visibleData;
+              if (visibleData) copyToClipboard(visibleData);
+            });
         });
     });
   </script>
