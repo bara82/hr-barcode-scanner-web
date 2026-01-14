@@ -4,250 +4,224 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Invoice Scanner</title>
+
   <link rel="stylesheet" href="styles.css">
 
-  <!-- OFFLINE QR library (copied from EPC-QR-Code-Offline-Generator repo) -->
+  <!-- OFFLINE QR library -->
   <script src="assets/qrcode.min.js"></script>
-</head>
-<body>
-  <main class="wrapper">
-    <!-- Scanning Page -->
-    <section class="container" id="scanning-page">
-      <h1 class="title">Scan Croatian Invoice Barcode</h1>
-      <p>Position the barcode in front of the camera</p>
-      <video id="video" width="300" height="200"></video>
-    </section>
 
-    <!-- Results Page -->
-    <section class="container" id="results-page">
-      <h1 class="title">Scan Result</h1>
-      <div id="result-fields"></div>
-
-      <!-- QR -->
-      <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
-      <div id="qr"></div>
-      <p style="font-size:0.9rem; opacity:0.7;">Scan in Revolut → Payments → QR</p>
-
-      <button class="button-large" id="copyAllButton">Copy All</button>
-      <a class="button-large" id="scanAgainButton">Scan Another</a>
-    </section>
-
-    <footer class="footer">
-      <section class="container">
-        <p>Always double check the data before using it.</p>
-      </section>
-    </footer>
-  </main>
-
-  <div popover id="copied-popover">Copied to clipboard</div>
-
-  <!-- Scanner lib (online). Ako želiš FULL offline i za skener, i ovo trebaš vendorati lokalno -->
+  <!-- ZXing PDF417 -->
   <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+</head>
 
-  <script>
-    let codeReader;
-    let selectedDeviceId;
-    let isScanning = false;
+<body>
+<main class="wrapper">
 
-    function showScanningPage() {
-      document.getElementById('scanning-page').style.display = 'block';
-      document.getElementById('results-page').style.display = 'none';
+  <!-- SCANNING PAGE -->
+  <section class="container" id="scanning-page">
+    <h1 class="title">Scan Croatian Invoice Barcode</h1>
+
+    <div style="display:flex; gap:1rem; justify-content:center; margin-bottom:1rem;">
+      <button class="button-large" id="cameraScanBtn">📷 Scan with camera</button>
+      <button class="button-large" id="imageScanBtn">🖼 Upload image</button>
+    </div>
+
+    <video id="video" width="300" height="200" style="display:none;"></video>
+    <input type="file" id="imageInput" accept="image/*" style="display:none">
+  </section>
+
+  <!-- RESULTS PAGE -->
+  <section class="container" id="results-page" style="display:none;">
+    <h1 class="title">Scan Result</h1>
+    <div id="result-fields"></div>
+
+    <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
+    <div id="qr"></div>
+    <p style="font-size:0.9rem; opacity:0.7;">Scan in Revolut → Payments → QR</p>
+
+    <button class="button-large" id="copyAllButton">Copy All</button>
+    <button class="button-large" id="scanAgainButton">Scan Another</button>
+  </section>
+
+  <footer class="footer">
+    <section class="container">
+      <p>Always double check the data before using it.</p>
+    </section>
+  </footer>
+
+</main>
+
+<div popover id="copied-popover">Copied to clipboard</div>
+
+<script>
+let codeReader;
+let selectedDeviceId;
+let isScanning = false;
+
+/* ---------- UI ---------- */
+function showScanningPage() {
+  document.getElementById('scanning-page').style.display = 'block';
+  document.getElementById('results-page').style.display = 'none';
+}
+
+function showResultsPage(text) {
+  document.getElementById('scanning-page').style.display = 'none';
+  document.getElementById('results-page').style.display = 'block';
+
+  const lines = text.split('\n');
+  const fields = document.getElementById('result-fields');
+  fields.innerHTML = '';
+
+  let copyLines = [];
+  let qrData = {};
+
+  for (let i = 0; i < lines.length; i++) {
+    const label = labelForLine(i);
+    if (!label) continue;
+
+    let value = lines[i];
+    let copyValue = value;
+
+    if (label === 'Amount') {
+      const formatted = formatAmount(value);
+      value = formatted.display;
+      copyValue = formatted.copy;
+      qrData.amount = formatted.copy;
     }
 
-    function labelForLine(index) {
-      switch (index) {
-        case 2: return 'Amount';
-        case 6: return 'Recipient';
-        case 7: return 'Recipient\'s Address (Street and number)';
-        case 8: return 'Recipient\'s Address (City and postal code)';
-        case 9: return 'Recipient\'s IBAN';
-        case 11: return 'Reference';
-        default: return null;
+    if (label === 'Recipient') qrData.name = value;
+    if (label === "Recipient's IBAN") qrData.iban = value;
+    if (label === 'Reference') qrData.reference = value;
+
+    copyLines.push(copyValue);
+
+    const div = document.createElement('div');
+    div.className = 'result-field';
+    div.dataset.copyValue = copyValue;
+
+    div.innerHTML = `
+      <label class="result-label">${label}</label>
+      <div class="result-value">${value}</div>
+    `;
+
+    div.onclick = () => copyToClipboard(copyValue);
+    fields.appendChild(div);
+  }
+
+  fields.dataset.visibleData = copyLines.join('\n');
+
+  if (qrData.name && qrData.iban) {
+    renderQr(buildEpcPayload(qrData));
+  }
+}
+
+/* ---------- BARCODE ---------- */
+function startCameraScan() {
+  if (isScanning) return;
+  isScanning = true;
+
+  document.getElementById('video').style.display = 'block';
+  showScanningPage();
+
+  codeReader.decodeFromInputVideoDeviceContinuously(
+    selectedDeviceId,
+    'video',
+    (result) => {
+      if (result) {
+        codeReader.reset();
+        isScanning = false;
+        showResultsPage(fixEncoding(result.text));
       }
     }
+  );
+}
 
-    function formatAmount(amountString) {
-      // 15-digit cents
-      if (amountString.length !== 15) return amountString;
+function scanFromImage(file) {
+  const img = document.createElement('img');
+  const reader = new FileReader();
 
-      const cents = parseInt(amountString, 10);
-      if (isNaN(cents)) return amountString;
+  reader.onload = () => {
+    img.src = reader.result;
+    codeReader.decodeFromImageElement(img)
+      .then(res => showResultsPage(fixEncoding(res.text)))
+      .catch(() => alert('Barcode not found in image'));
+  };
 
-      const euros = cents / 100.0;
-      return {
-        display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-        copy: euros.toFixed(2) // IMPORTANT: "5.06" (dot), for EPC payload
-      }
-    }
+  reader.readAsDataURL(file);
+}
 
-    let copyPopoverTimeout;
-    function copyToClipboard(text) {
-      navigator.clipboard.writeText(text).then(() => {
-        clearTimeout(copyPopoverTimeout);
-        const popover = document.getElementById('copied-popover');
-        popover.showPopover();
-        copyPopoverTimeout = setTimeout(() => popover.hidePopover(), 1500);
-      });
-    }
+/* ---------- HELPERS ---------- */
+function labelForLine(i) {
+  return {
+    2: 'Amount',
+    6: 'Recipient',
+    7: "Recipient's Address",
+    8: "Recipient's City",
+    9: "Recipient's IBAN",
+    11: 'Reference'
+  }[i];
+}
 
-    function fixEncoding(text) {
-      const map = {
-        'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
-        'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
-        'Å½': 'Ž','Å¾': 'ž',
-      }
-      const keys = Object.keys(map);
-      const regex = new RegExp(keys.join('|'), 'g');
-      return text.replace(regex, match => map[match]).toUpperCase();
-    }
+function formatAmount(s) {
+  const cents = parseInt(s, 10) / 100;
+  return {
+    display: cents.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR' }),
+    copy: cents.toFixed(2)
+  };
+}
 
-    // EPC payload (NO extra newline at end)
-    function buildEpcPayload({ name, iban, amount, reference }) {
-      const lines = [
-        "BCD",
-        "001",
-        "1",
-        "SCT",
-        "",             // BIC optional
-        name || "",
-        iban || "",
-        amount ? `EUR${amount}` : "",
-        "",             // purpose code optional
-        reference || "",
-        ""              // note to originator optional
-      ];
-      // important: join with \n but don't add extra newline beyond join
-      return lines.join("\n");
-    }
+function fixEncoding(t) {
+  const map = {
+    'ÄŒ':'Č','Ä':'č','Ä†':'Ć','Ä‡':'ć',
+    'Ä':'Đ','Ä‘':'đ','Å ':'Š','Å¡':'š',
+    'Å½':'Ž','Å¾':'ž'
+  };
+  return t.replace(new RegExp(Object.keys(map).join('|'),'g'), m => map[m]).toUpperCase();
+}
 
-    // Render QR using offline library.
-    // Support both common APIs:
-    // - davidshim qrcodejs: new QRCode(el, {text, width, height, ...})
-    // - node-qrcode browser build: QRCode.toCanvas / toDataURL
-    function renderQr(epcText) {
-      const host = document.getElementById('qr');
-      host.innerHTML = "";
+function buildEpcPayload({ name, iban, amount, reference }) {
+  return [
+    'BCD','001','1','SCT','',
+    name || '',
+    iban || '',
+    amount ? `EUR${amount}` : '',
+    '',
+    reference || '',
+    ''
+  ].join('\n');
+}
 
-      // If library exposes QRCode.toCanvas (node-qrcode style)
-      if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
-        const canvas = document.createElement("canvas");
-        host.appendChild(canvas);
-        window.QRCode.toCanvas(canvas, epcText, { errorCorrectionLevel: "M", width: 300 }, (err) => {
-          if (err) host.innerHTML = "<p style='color:#c00'>QR error</p>";
-        });
-        return;
-      }
+function renderQr(text) {
+  const el = document.getElementById('qr');
+  el.innerHTML = '';
+  new QRCode(el, { text, width:300, height:300 });
+}
 
-      // If library is qrcodejs (davidshim) style
-      if (window.QRCode && typeof window.QRCode === "function") {
-        new window.QRCode(host, {
-          text: epcText,
-          width: 300,
-          height: 300,
-          correctLevel: (window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined)
-        });
-        return;
-      }
+function copyToClipboard(t) {
+  navigator.clipboard.writeText(t);
+}
 
-      host.innerHTML = "<p style='color:#c00'>QR library not loaded (assets/qrcode.min.js)</p>";
-    }
+/* ---------- INIT ---------- */
+window.onload = () => {
+  codeReader = new ZXing.BrowserPDF417Reader();
 
-    function showResultsPage(resultText) {
-      document.getElementById('scanning-page').style.display = 'none';
-      document.getElementById('results-page').style.display = 'block';
+  codeReader.getVideoInputDevices().then(devices => {
+    selectedDeviceId = devices[0]?.deviceId;
+  });
 
-      const rawDataLines = resultText.split('\n');
-      const resultFields = document.getElementById('result-fields');
-      resultFields.innerHTML = '';
+  document.getElementById('cameraScanBtn').onclick = startCameraScan;
+  document.getElementById('imageScanBtn').onclick = () =>
+    document.getElementById('imageInput').click();
 
-      let visibleDataLines = [];
-      let qrData = {};
+  document.getElementById('imageInput').onchange = e => {
+    if (e.target.files[0]) scanFromImage(e.target.files[0]);
+  };
 
-      for (let index = 0; index < rawDataLines.length; index++) {
-        const label = labelForLine(index);
-        if (!label) continue;
-
-        const line = rawDataLines[index];
-        const amountValue = label === 'Amount' ? formatAmount(line) : null;
-
-        const displayValue = amountValue ? amountValue.display : line;
-        const copyValue = amountValue ? amountValue.copy : line;
-
-        // Collect for Copy All
-        visibleDataLines.push(copyValue);
-
-        // Collect for QR
-        if (label === 'Amount' && amountValue && typeof amountValue.copy === "string") qrData.amount = amountValue.copy;
-        if (label === 'Recipient') qrData.name = line;
-        if (label === 'Recipient\'s IBAN') qrData.iban = line;
-        if (label === 'Reference') qrData.reference = line;
-
-        const fieldContainer = document.createElement('div');
-        fieldContainer.className = 'result-field';
-        fieldContainer.dataset.copyValue = copyValue;
-
-        const labelElement = document.createElement('label');
-        labelElement.className = 'result-label';
-        labelElement.textContent = label;
-
-        const valueElement = document.createElement('div');
-        valueElement.className = 'result-value';
-        valueElement.textContent = displayValue;
-
-        fieldContainer.appendChild(labelElement);
-        fieldContainer.appendChild(valueElement);
-
-        fieldContainer.addEventListener('click', function() {
-          copyToClipboard(this.dataset.copyValue);
-        });
-
-        resultFields.appendChild(fieldContainer);
-      }
-
-      // Store visible data for "Copy All"
-      resultFields.dataset.visibleData = visibleDataLines.join('\n');
-
-      // Generate QR
-      if (qrData.name && qrData.iban) {
-        const payload = buildEpcPayload(qrData);
-        renderQr(payload);
-      }
-    }
-
-    function startScanning() {
-      if (isScanning) return;
-
-      isScanning = true;
-      showScanningPage();
-
-      codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
-        if (result) {
-          codeReader.reset();
-          isScanning = false;
-          showResultsPage(fixEncoding(result.text));
-        }
-      });
-    }
-
-    window.addEventListener('load', function () {
-      codeReader = new ZXing.BrowserPDF417Reader();
-      codeReader.getVideoInputDevices()
-        .then((videoInputDevices) => {
-          selectedDeviceId = videoInputDevices[0].deviceId;
-
-          startScanning();
-
-          document.getElementById('scanAgainButton').addEventListener('click', () => {
-            startScanning();
-          });
-
-          document.getElementById('copyAllButton').addEventListener('click', () => {
-            const visibleData = document.getElementById('result-fields').dataset.visibleData;
-            if (visibleData) copyToClipboard(visibleData);
-          });
-        })
-        .catch((err) => console.error(err));
-    });
-  </script>
+  document.getElementById('scanAgainButton').onclick = startCameraScan;
+  document.getElementById('copyAllButton').onclick = () => {
+    copyToClipboard(document.getElementById('result-fields').dataset.visibleData);
+  };
+};
+</script>
 </body>
 </html>
