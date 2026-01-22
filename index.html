@@ -5,74 +5,486 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Invoice Scanner</title>
 
+  <!-- Your existing stylesheet (kept) -->
   <link rel="stylesheet" href="styles.css">
+
+  <!-- iOS Add to Home Screen icon/title -->
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Invoice Scanner">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
   <!-- OFFLINE QR library -->
   <script src="assets/qrcode.min.js"></script>
 
-  <!-- ZXing PDF417 -->
+  <!-- ZXing PDF417 (online; vendor locally if you want fully offline) -->
   <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
-  <!-- Apple Icon -->
-  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Invoice Scanner">
+  <style>
+    /* Minimal layout helpers (won't fight your styles.css) */
+    .view { display: none; padding-bottom: 88px; }
+    .view.active { display: block; }
+
+    .bottom-nav {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: 68px;
+      display: flex;
+      background: #fff;
+      border-top: 1px solid rgba(0,0,0,0.12);
+      z-index: 9999;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .bottom-nav button {
+      flex: 1;
+      border: none;
+      background: transparent;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 12px;
+      padding: 8px 6px;
+      opacity: 0.8;
+    }
+    .bottom-nav button.active { opacity: 1; font-weight: 700; }
+
+    .nav-ico { font-size: 18px; line-height: 1; }
+
+    .toolbar {
+      display:flex;
+      gap: 0.5rem;
+      align-items:center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin: 0.75rem 0 0.25rem;
+    }
+    .toolbar .left, .toolbar .right { display:flex; gap:0.5rem; align-items:center; flex-wrap: wrap; }
+
+    .small-btn {
+      border: 1px solid rgba(0,0,0,0.18);
+      background: #fff;
+      padding: 0.45rem 0.65rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .small-btn.danger { border-color: rgba(200,0,0,0.35); color: #b00; }
+
+    .input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 0.8rem 0.9rem;
+      border-radius: 12px;
+      border: 1px solid rgba(0,0,0,0.18);
+      font-size: 1rem;
+      margin: 0.35rem 0 0.75rem;
+    }
+    .hint { font-size: 0.9rem; opacity: 0.75; margin: 0.25rem 0 0.75rem; }
+
+    /* History list */
+    .history-item {
+      border: 1px solid rgba(0,0,0,0.12);
+      border-radius: 14px;
+      padding: 0.75rem;
+      margin: 0.6rem 0;
+    }
+    .history-top {
+      display:flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+    .history-meta { font-size: 0.9rem; opacity: 0.8; }
+    .history-title { font-weight: 700; }
+    .history-actions { display:flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.55rem; }
+
+    .checkbox {
+      width: 20px; height: 20px;
+      accent-color: #000;
+    }
+
+    /* Simple modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      z-index: 10000;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      width: min(720px, 96vw);
+      max-height: 86vh;
+      overflow: auto;
+      background: #fff;
+      border-radius: 18px;
+      padding: 1rem;
+      box-shadow: 0 10px 35px rgba(0,0,0,0.25);
+    }
+    .modal h2 { margin: 0 0 0.75rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.92rem; white-space: pre-wrap; word-break: break-word; }
+    .divider { height: 1px; background: rgba(0,0,0,0.12); margin: 0.75rem 0; }
+  </style>
 </head>
 
 <body>
-<main class="wrapper">
+  <main class="wrapper">
 
-  <!-- SCANNING PAGE -->
-  <section class="container" id="scanning-page">
-    <h1 class="title">Scan Croatian Invoice Barcode</h1>
+    <!-- ======================= SCAN VIEW ======================= -->
+    <section id="scanView" class="view active">
 
-    <div style="display:flex; gap:1rem; justify-content:center; margin-bottom:1rem;">
-      <button class="button-large" id="cameraScanBtn">📷 Scan with camera</button>
-      <button class="button-large" id="imageScanBtn">🖼 Upload image</button>
-    </div>
+      <!-- Scanning Page -->
+      <section class="container" id="scanning-page">
+        <h1 class="title">Scan Croatian Invoice Barcode</h1>
 
-    <p>Position the barcode in front of the camera</p>
-    <video id="video" width="300" height="200" style="display:none;"></video>
+        <div style="display:flex; gap:1rem; justify-content:center; margin-bottom:1rem; flex-wrap:wrap;">
+          <button class="button-large" id="cameraScanBtn">📷 Scan with camera</button>
+          <button class="button-large" id="imageScanBtn">🖼 Upload image</button>
+        </div>
 
-    <input type="file" id="imageInput" accept="image/*" style="display:none">
-  </section>
+        <p class="hint">Position the barcode in front of the camera</p>
+        <video id="video" width="300" height="200" style="display:none;"></video>
+        <input type="file" id="imageInput" accept="image/*" style="display:none">
+      </section>
 
-  <!-- RESULTS PAGE -->
-  <section class="container" id="results-page" style="display:none;">
-    <h1 class="title">Scan Result</h1>
-    <div id="result-fields"></div>
+      <!-- Results Page -->
+      <section class="container" id="results-page" style="display:none;">
+        <h1 class="title">Scan Result</h1>
+        <div id="result-fields"></div>
 
-    <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
-    <div id="qr"></div>
-    <p style="font-size:0.9rem; opacity:0.7;">Scan in Revolut → Payments → QR</p>
+        <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
+        <div id="qr"></div>
+        <p class="hint">Scan in Revolut → Payments → QR</p>
 
-    <button class="button-large" id="copyAllButton">Copy All</button>
-    <button class="button-large" id="scanAgainButton">Scan Another</button>
-  </section>
+        <button class="button-large" id="copyAllButton">Copy All</button>
+        <button class="button-large" id="scanAgainButton">Scan Another</button>
+      </section>
 
-  <footer class="footer">
-    <section class="container">
-      <p>Always double check the data before using it.</p>
+      <footer class="footer">
+        <section class="container">
+          <p>Always double check the data before using it.</p>
+        </section>
+      </footer>
+
+      <div popover id="copied-popover">Copied to clipboard</div>
     </section>
-  </footer>
 
-</main>
+    <!-- ======================= GENERATE VIEW ======================= -->
+    <section id="generateView" class="view">
+      <section class="container">
+        <h1 class="title">Generate QR Code</h1>
+        <p class="hint">Enter any text (or payment payload) and generate a QR. It will be saved to History.</p>
 
-<div popover id="copied-popover">Copied to clipboard</div>
+        <label class="result-label" for="genText">Text / Payload</label>
+        <textarea id="genText" class="input" rows="5" placeholder="Paste text here..."></textarea>
+
+        <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+          <button class="button-large" id="genBtn">Generate QR</button>
+          <button class="button-large" id="genClearBtn">Clear</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div id="genQr"></div>
+        <div id="genPayloadPreview" class="mono" style="margin-top:0.75rem; opacity:0.85;"></div>
+      </section>
+    </section>
+
+    <!-- ======================= HISTORY VIEW ======================= -->
+    <section id="historyView" class="view">
+      <section class="container">
+        <h1 class="title">History</h1>
+        <p class="hint">Stored only on this device (localStorage). Newest item is on top.</p>
+
+        <div class="toolbar">
+          <div class="left">
+            <button class="small-btn" id="selectAllBtn">Select all</button>
+            <button class="small-btn" id="clearSelectionBtn">Clear selection</button>
+          </div>
+          <div class="right">
+            <button class="small-btn" id="exportSelectedBtn">Export selected</button>
+            <button class="small-btn danger" id="deleteSelectedBtn">Delete selected</button>
+          </div>
+        </div>
+
+        <div id="historyList"></div>
+
+        <div style="margin-top:0.75rem;">
+          <button class="small-btn danger" id="clearAllBtn">Delete ALL history</button>
+        </div>
+      </section>
+    </section>
+
+  </main>
+
+  <!-- ======================= BOTTOM NAV ======================= -->
+  <nav class="bottom-nav" aria-label="Bottom navigation">
+    <button id="tabScan" class="active" type="button" data-view="scanView">
+      <div class="nav-ico">📷</div>
+      <div>Scan</div>
+    </button>
+    <button id="tabGen" type="button" data-view="generateView">
+      <div class="nav-ico">🔳</div>
+      <div>Generate</div>
+    </button>
+    <button id="tabHist" type="button" data-view="historyView">
+      <div class="nav-ico">🕘</div>
+      <div>History</div>
+    </button>
+  </nav>
+
+  <!-- ======================= MODAL ======================= -->
+  <div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+        <h2 id="modalTitle">Details</h2>
+        <button class="small-btn" id="modalCloseBtn" type="button">Close</button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
+  </div>
 
 <script>
+/* =========================================================
+   Helpers: View switching
+========================================================= */
+function switchView(viewId) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById(viewId).classList.add('active');
+
+  document.querySelectorAll('.bottom-nav button').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.bottom-nav button[data-view="${viewId}"]`).classList.add('active');
+
+  if (viewId === 'historyView') renderHistory();
+}
+
+/* =========================================================
+   Storage: History (localStorage)
+========================================================= */
+const HISTORY_KEY = 'qrHistory_v1';
+const HISTORY_LIMIT = 200;
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(arr) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0, HISTORY_LIMIT)));
+}
+
+function addHistoryItem(item) {
+  const arr = loadHistory();
+  const entry = {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+    ts: Date.now(),
+    type: item.type,                // 'scan' | 'manual'
+    title: item.title || '',
+    payload: item.payload || '',    // text stored (EPC or manual)
+    fields: item.fields || null,    // parsed scan fields (optional)
+    raw: item.raw || null           // raw scan text (optional)
+  };
+  arr.unshift(entry); // newest first
+  saveHistory(arr);
+}
+
+function deleteHistoryByIds(ids) {
+  const set = new Set(ids);
+  const arr = loadHistory().filter(x => !set.has(x.id));
+  saveHistory(arr);
+}
+
+function clearAllHistory() {
+  localStorage.removeItem(HISTORY_KEY);
+}
+
+/* Export helpers */
+function downloadText(filename, text, mime = 'application/json') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportEntries(entries) {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    count: entries.length,
+    entries
+  };
+  const safeName = `history-export-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
+  downloadText(safeName, JSON.stringify(payload, null, 2));
+}
+
+/* =========================================================
+   Modal
+========================================================= */
+function openModal(title, bodyHtml) {
+  const backdrop = document.getElementById('modalBackdrop');
+  document.getElementById('modalTitle').textContent = title;
+  const body = document.getElementById('modalBody');
+  body.innerHTML = bodyHtml;
+  backdrop.classList.add('show');
+  backdrop.setAttribute('aria-hidden', 'false');
+}
+
+function closeModal() {
+  const backdrop = document.getElementById('modalBackdrop');
+  backdrop.classList.remove('show');
+  backdrop.setAttribute('aria-hidden', 'true');
+  document.getElementById('modalBody').innerHTML = '';
+}
+
+/* =========================================================
+   QR rendering (supports both common APIs)
+========================================================= */
+function renderQrInto(hostEl, text, size=300) {
+  hostEl.innerHTML = "";
+
+  if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
+    const canvas = document.createElement("canvas");
+    hostEl.appendChild(canvas);
+    window.QRCode.toCanvas(canvas, text, { errorCorrectionLevel: "M", width: size }, (err) => {
+      if (err) hostEl.innerHTML = "<p style='color:#c00'>QR error</p>";
+    });
+    return;
+  }
+
+  if (window.QRCode && typeof window.QRCode === "function") {
+    new window.QRCode(hostEl, {
+      text,
+      width: size,
+      height: size,
+      correctLevel: (window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined)
+    });
+    return;
+  }
+
+  hostEl.innerHTML = "<p style='color:#c00'>QR library not loaded (assets/qrcode.min.js)</p>";
+}
+
+/* =========================================================
+   SCAN logic (camera + upload) + HUB 3A reference fix
+========================================================= */
 let codeReader;
 let selectedDeviceId;
 let isScanning = false;
 
-/* ---------- UI ---------- */
 function showScanningPage() {
   document.getElementById('scanning-page').style.display = 'block';
   document.getElementById('results-page').style.display = 'none';
 }
 
-/* ---------- HUB LABELS ---------- */
+function showResultsPage(resultText, metaForHistory = null) {
+  document.getElementById('scanning-page').style.display = 'none';
+  document.getElementById('results-page').style.display = 'block';
+
+  const rawDataLines = resultText.split('\n');
+  const resultFields = document.getElementById('result-fields');
+  resultFields.innerHTML = '';
+
+  // HUB 3A: line 10 = model, line 11 = reference
+  const paymentModel = rawDataLines[10] || "";
+  const paymentReference = rawDataLines[11] || "";
+  const fullReference = (paymentModel && paymentReference) ? `${paymentModel} ${paymentReference}` : paymentReference;
+
+  let visibleDataLines = [];
+  let qrData = {};
+  let parsedFields = {}; // store for history
+
+  for (let index = 0; index < rawDataLines.length; index++) {
+    const label = labelForLine(index);
+    if (!label) continue;
+
+    const line = rawDataLines[index];
+
+    const amountValue = (label === 'Amount') ? formatAmount(line) : null;
+
+    const displayValue =
+      (label === 'Reference') ? fullReference :
+      (amountValue ? amountValue.display : line);
+
+    const copyValue =
+      (label === 'Reference') ? fullReference :
+      (amountValue ? amountValue.copy : line);
+
+    visibleDataLines.push(copyValue);
+
+    // Collect for EPC QR
+    if (label === 'Amount' && amountValue && typeof amountValue.copy === "string") {
+      qrData.amount = amountValue.copy;
+      parsedFields.amount = amountValue.display;
+      parsedFields.amountEurDot = amountValue.copy;
+    }
+    if (label === 'Recipient') { qrData.name = line; parsedFields.recipient = line; }
+    if (label === 'Recipient\'s Address (Street and number)') { parsedFields.address1 = line; }
+    if (label === 'Recipient\'s Address (City and postal code)') { parsedFields.address2 = line; }
+    if (label === 'Recipient\'s IBAN') { qrData.iban = line; parsedFields.iban = line; }
+    if (label === 'Payment Model') { parsedFields.model = line; }
+    if (label === 'Reference') { qrData.reference = fullReference; parsedFields.reference = fullReference; }
+
+    const fieldContainer = document.createElement('div');
+    fieldContainer.className = 'result-field';
+    fieldContainer.dataset.copyValue = copyValue;
+
+    const labelElement = document.createElement('label');
+    labelElement.className = 'result-label';
+    labelElement.textContent = label;
+
+    const valueElement = document.createElement('div');
+    valueElement.className = 'result-value';
+    valueElement.textContent = displayValue;
+
+    fieldContainer.appendChild(labelElement);
+    fieldContainer.appendChild(valueElement);
+
+    fieldContainer.addEventListener('click', function() {
+      copyToClipboard(this.dataset.copyValue);
+    });
+
+    resultFields.appendChild(fieldContainer);
+  }
+
+  // Store visible data for "Copy All"
+  resultFields.dataset.visibleData = visibleDataLines.join('\n');
+
+  // Generate EPC + QR
+  let epcPayload = "";
+  if (qrData.name && qrData.iban) {
+    epcPayload = buildEpcPayload(qrData);
+    renderQrInto(document.getElementById('qr'), epcPayload, 300);
+  } else {
+    document.getElementById('qr').innerHTML = "";
+  }
+
+  // Save to history (scan)
+  addHistoryItem({
+    type: 'scan',
+    title: parsedFields.recipient ? `Scan: ${parsedFields.recipient}` : 'Scan',
+    payload: epcPayload || (metaForHistory?.raw || ''),
+    fields: {
+      ...parsedFields,
+      epcPayload: epcPayload || ""
+    },
+    raw: metaForHistory?.raw || resultText
+  });
+}
+
 function labelForLine(index) {
   switch (index) {
     case 2: return 'Amount';
@@ -86,208 +498,354 @@ function labelForLine(index) {
   }
 }
 
-/* ---------- FORMAT ---------- */
 function formatAmount(amountString) {
+  // 15-digit cents
   if (amountString.length !== 15) return amountString;
+
   const cents = parseInt(amountString, 10);
   if (isNaN(cents)) return amountString;
 
   const euros = cents / 100.0;
   return {
-    display: euros.toLocaleString('hr-HR', {
-      style: 'currency',
-      currency: 'EUR',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }),
-    copy: euros.toFixed(2)
-  };
+    display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    copy: euros.toFixed(2) // IMPORTANT: "5.06" (dot), for EPC payload
+  }
 }
 
-/* ---------- COPY ---------- */
 let copyPopoverTimeout;
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(() => {
     clearTimeout(copyPopoverTimeout);
     const popover = document.getElementById('copied-popover');
-    popover.showPopover();
-    copyPopoverTimeout = setTimeout(() => popover.hidePopover(), 1500);
+    if (popover?.showPopover) popover.showPopover();
+    copyPopoverTimeout = setTimeout(() => {
+      if (popover?.hidePopover) popover.hidePopover();
+    }, 1500);
   });
 }
 
-/* ---------- ENCODING FIX ---------- */
 function fixEncoding(text) {
   const map = {
-    'ÄŒ':'Č','Ä':'č','Ä†':'Ć','Ä‡':'ć',
-    'Ä':'Đ','Ä‘':'đ','Å ':'Š','Å¡':'š',
-    'Å½':'Ž','Å¾':'ž'
+    'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
+    'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
+    'Å½': 'Ž','Å¾': 'ž'
   };
-  const regex = new RegExp(Object.keys(map).join('|'), 'g');
+  const keys = Object.keys(map);
+  const regex = new RegExp(keys.join('|'), 'g');
   return text.replace(regex, m => map[m]).toUpperCase();
 }
 
-/* ---------- EPC QR ---------- */
+// EPC payload (NO extra newline at end)
 function buildEpcPayload({ name, iban, amount, reference }) {
   const lines = [
-    "BCD","001","1","SCT","",
+    "BCD",
+    "001",
+    "1",
+    "SCT",
+    "",             // BIC optional
     name || "",
     iban || "",
     amount ? `EUR${amount}` : "",
-    "",
+    "",             // purpose code optional
     reference || "",
-    ""
+    ""              // note to originator optional
   ];
   return lines.join("\n");
 }
 
-function renderQr(epcText) {
-  const host = document.getElementById('qr');
-  host.innerHTML = "";
-
-  if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
-    const canvas = document.createElement("canvas");
-    host.appendChild(canvas);
-    window.QRCode.toCanvas(canvas, epcText, {
-      errorCorrectionLevel: "M",
-      width: 300
-    });
-    return;
-  }
-
-  if (window.QRCode && typeof window.QRCode === "function") {
-    new window.QRCode(host, {
-      text: epcText,
-      width: 300,
-      height: 300,
-      correctLevel: window.QRCode.CorrectLevel?.M
-    });
-    return;
-  }
-
-  host.innerHTML = "<p style='color:red'>QR library not loaded</p>";
-}
-
-/* ---------- RESULTS ---------- */
-function showResultsPage(resultText) {
-  document.getElementById('scanning-page').style.display = 'none';
-  document.getElementById('results-page').style.display = 'block';
-
-  const rawDataLines = resultText.split('\n');
-  const resultFields = document.getElementById('result-fields');
-  resultFields.innerHTML = '';
-
-  let visibleDataLines = [];
-  let qrData = {};
-
-  const paymentModel = rawDataLines[10] || "";
-  const paymentReference = rawDataLines[11] || "";
-  const fullReference =
-    paymentModel && paymentReference
-      ? `${paymentModel} ${paymentReference}`
-      : paymentReference;
-
-  for (let index = 0; index < rawDataLines.length; index++) {
-    const label = labelForLine(index);
-    if (!label) continue;
-
-    const line = rawDataLines[index];
-    const amountValue = label === 'Amount' ? formatAmount(line) : null;
-
-    const displayValue =
-      label === 'Reference'
-        ? fullReference
-        : amountValue ? amountValue.display : line;
-
-    const copyValue =
-      label === 'Reference'
-        ? fullReference
-        : amountValue ? amountValue.copy : line;
-
-    visibleDataLines.push(copyValue);
-
-    if (label === 'Amount' && amountValue) qrData.amount = amountValue.copy;
-    if (label === 'Recipient') qrData.name = line;
-    if (label === 'Recipient\'s IBAN') qrData.iban = line;
-    if (label === 'Reference') qrData.reference = fullReference;
-
-    const fieldContainer = document.createElement('div');
-    fieldContainer.className = 'result-field';
-    fieldContainer.dataset.copyValue = copyValue;
-
-    fieldContainer.innerHTML = `
-      <label class="result-label">${label}</label>
-      <div class="result-value">${displayValue}</div>
-    `;
-
-    fieldContainer.onclick = () => copyToClipboard(copyValue);
-    resultFields.appendChild(fieldContainer);
-  }
-
-  resultFields.dataset.visibleData = visibleDataLines.join('\n');
-
-  if (qrData.name && qrData.iban) {
-    renderQr(buildEpcPayload(qrData));
-  }
-}
-
-/* ---------- SCAN ---------- */
 function startScanning() {
   if (isScanning) return;
+
   isScanning = true;
   showScanningPage();
   document.getElementById('video').style.display = 'block';
 
-  codeReader.decodeFromInputVideoDeviceContinuously(
-    selectedDeviceId,
-    'video',
-    (result) => {
-      if (result) {
-        codeReader.reset();
-        isScanning = false;
-        showResultsPage(fixEncoding(result.text));
-      }
+  codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
+    if (result) {
+      codeReader.reset();
+      isScanning = false;
+      showResultsPage(fixEncoding(result.text), { raw: fixEncoding(result.text) });
     }
-  );
+  });
 }
 
 function scanFromImageFile(file) {
   const img = document.createElement('img');
-  const reader = new FileReader();
+  img.style.display = 'none';
+  document.body.appendChild(img);
 
+  const reader = new FileReader();
   reader.onload = () => {
     img.src = reader.result;
-    codeReader.decodeFromImageElement(img)
-      .then(result => showResultsPage(fixEncoding(result.text)))
-      .catch(() => alert('Barcode not detected in image'));
-  };
 
+    codeReader.decodeFromImageElement(img)
+      .then(result => {
+        document.body.removeChild(img);
+        showResultsPage(fixEncoding(result.text), { raw: fixEncoding(result.text) });
+      })
+      .catch(err => {
+        document.body.removeChild(img);
+        alert('Barcode not detected in image');
+        console.error(err);
+      });
+  };
   reader.readAsDataURL(file);
 }
 
-/* ---------- INIT ---------- */
-window.addEventListener('load', () => {
-  codeReader = new ZXing.BrowserPDF417Reader();
+/* =========================================================
+   GENERATE view logic
+========================================================= */
+function generateManualQR() {
+  const text = (document.getElementById('genText').value || '').trim();
+  if (!text) {
+    alert('Please enter some text first.');
+    return;
+  }
+  const host = document.getElementById('genQr');
+  renderQrInto(host, text, 300);
 
-  codeReader.getVideoInputDevices().then(devices => {
-    selectedDeviceId = devices[0]?.deviceId;
+  const preview = document.getElementById('genPayloadPreview');
+  preview.textContent = text;
+
+  addHistoryItem({
+    type: 'manual',
+    title: text.length > 42 ? `Manual: ${text.slice(0, 42)}…` : `Manual: ${text}`,
+    payload: text,
+    fields: null,
+    raw: null
   });
+}
 
-  document.getElementById('cameraScanBtn').onclick = startScanning;
-  document.getElementById('imageScanBtn').onclick =
-    () => document.getElementById('imageInput').click();
+function clearManualQR() {
+  document.getElementById('genText').value = '';
+  document.getElementById('genQr').innerHTML = '';
+  document.getElementById('genPayloadPreview').textContent = '';
+}
 
-  document.getElementById('imageInput').onchange = e => {
-    if (e.target.files[0]) {
-      codeReader.reset();
-      scanFromImageFile(e.target.files[0]);
+/* =========================================================
+   HISTORY view rendering + delete/export
+========================================================= */
+function renderHistory() {
+  const arr = loadHistory(); // newest first already
+  const list = document.getElementById('historyList');
+  list.innerHTML = '';
+
+  if (!arr.length) {
+    list.innerHTML = "<p class='hint'>No history yet.</p>";
+    return;
+  }
+
+  for (const item of arr) {
+    const dt = new Date(item.ts);
+    const typeLabel = item.type === 'scan' ? 'SCAN' : 'GENERATE';
+    const title = item.title || (item.type === 'scan' ? 'Scan' : 'Manual');
+
+    const card = document.createElement('div');
+    card.className = 'history-item';
+    card.dataset.id = item.id;
+
+    const snippet = (item.payload || '').trim().slice(0, 120);
+    const snippetHtml = snippet ? `<div class="mono" style="opacity:0.85; margin-top:0.35rem;">${escapeHtml(snippet)}${(item.payload || '').length > 120 ? '…' : ''}</div>` : '';
+
+    card.innerHTML = `
+      <div class="history-top">
+        <div style="display:flex; gap:0.6rem; align-items:center;">
+          <input class="checkbox" type="checkbox" data-select="${item.id}" aria-label="Select">
+          <div>
+            <div class="history-title">${escapeHtml(title)}</div>
+            <div class="history-meta">${escapeHtml(typeLabel)} • ${dt.toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+      ${snippetHtml}
+      <div class="history-actions">
+        <button class="small-btn" data-action="open" data-id="${item.id}">Open</button>
+        <button class="small-btn" data-action="copy" data-id="${item.id}">Copy payload</button>
+        <button class="small-btn" data-action="export" data-id="${item.id}">Export</button>
+        <button class="small-btn danger" data-action="delete" data-id="${item.id}">Delete</button>
+      </div>
+    `;
+
+    list.appendChild(card);
+  }
+
+  // attach event delegation
+  list.onclick = (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+
+    const id = btn.getAttribute('data-id');
+    const action = btn.getAttribute('data-action');
+    const arr2 = loadHistory();
+    const item = arr2.find(x => x.id === id);
+    if (!item) return;
+
+    if (action === 'open') openHistoryItem(item);
+    if (action === 'copy') copyToClipboard(item.payload || '');
+    if (action === 'export') exportEntries([item]);
+    if (action === 'delete') {
+      if (confirm('Delete this history item?')) {
+        deleteHistoryByIds([id]);
+        renderHistory();
+      }
     }
   };
+}
 
-  document.getElementById('scanAgainButton').onclick = startScanning;
-  document.getElementById('copyAllButton').onclick = () => {
-    const data = document.getElementById('result-fields').dataset.visibleData;
-    if (data) copyToClipboard(data);
+function openHistoryItem(item) {
+  const dt = new Date(item.ts).toLocaleString();
+  const typeLabel = item.type === 'scan' ? 'Scan' : 'Generate';
+
+  let fieldsHtml = '';
+  if (item.fields) {
+    const f = item.fields;
+    fieldsHtml = `
+      <div class="divider"></div>
+      <h3 style="margin:0 0 0.35rem;">Parsed fields</h3>
+      <div class="mono">${escapeHtml(JSON.stringify(f, null, 2))}</div>
+    `;
+  }
+
+  let rawHtml = '';
+  if (item.raw) {
+    rawHtml = `
+      <div class="divider"></div>
+      <h3 style="margin:0 0 0.35rem;">Raw</h3>
+      <div class="mono">${escapeHtml(item.raw)}</div>
+    `;
+  }
+
+  const bodyId = "modalQrHost";
+  const html = `
+    <div class="history-meta">${escapeHtml(typeLabel)} • ${escapeHtml(dt)}</div>
+    <div class="divider"></div>
+    <h3 style="margin:0 0 0.35rem;">Payload</h3>
+    <div class="mono">${escapeHtml(item.payload || '')}</div>
+    <div class="divider"></div>
+    <h3 style="margin:0 0 0.35rem;">QR</h3>
+    <div id="${bodyId}"></div>
+    <div class="history-actions" style="margin-top:0.75rem;">
+      <button class="small-btn" id="modalCopyBtn" type="button">Copy payload</button>
+      <button class="small-btn" id="modalExportBtn" type="button">Export</button>
+      <button class="small-btn danger" id="modalDeleteBtn" type="button">Delete</button>
+    </div>
+    ${fieldsHtml}
+    ${rawHtml}
+  `;
+
+  openModal(item.title || 'Details', html);
+
+  // render QR after modal is visible
+  const host = document.getElementById(bodyId);
+  renderQrInto(host, item.payload || '', 300);
+
+  document.getElementById('modalCopyBtn').onclick = () => copyToClipboard(item.payload || '');
+  document.getElementById('modalExportBtn').onclick = () => exportEntries([item]);
+  document.getElementById('modalDeleteBtn').onclick = () => {
+    if (confirm('Delete this history item?')) {
+      deleteHistoryByIds([item.id]);
+      closeModal();
+      renderHistory();
+    }
   };
+}
+
+function getSelectedHistoryIds() {
+  return Array.from(document.querySelectorAll('input[data-select]'))
+    .filter(cb => cb.checked)
+    .map(cb => cb.getAttribute('data-select'));
+}
+
+function selectAllHistory(select = true) {
+  document.querySelectorAll('input[data-select]').forEach(cb => cb.checked = select);
+}
+
+/* HTML escaping */
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+/* =========================================================
+   Init wiring
+========================================================= */
+window.addEventListener('load', function () {
+  // Tabs
+  document.querySelectorAll('.bottom-nav button').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+
+  // Modal
+  document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
+  document.getElementById('modalBackdrop').addEventListener('click', (e) => {
+    if (e.target.id === 'modalBackdrop') closeModal();
+  });
+
+  // Scanner init
+  codeReader = new ZXing.BrowserPDF417Reader();
+  codeReader.getVideoInputDevices()
+    .then((videoInputDevices) => {
+      selectedDeviceId = videoInputDevices[0]?.deviceId;
+
+      // Buttons
+      document.getElementById('cameraScanBtn').addEventListener('click', () => startScanning());
+      document.getElementById('imageScanBtn').addEventListener('click', () => document.getElementById('imageInput').click());
+
+      document.getElementById('imageInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          codeReader.reset();
+          isScanning = false;
+          scanFromImageFile(file);
+          e.target.value = ''; // allow selecting same image again
+        }
+      });
+
+      document.getElementById('scanAgainButton').addEventListener('click', () => startScanning());
+
+      document.getElementById('copyAllButton').addEventListener('click', () => {
+        const visibleData = document.getElementById('result-fields').dataset.visibleData;
+        if (visibleData) copyToClipboard(visibleData);
+      });
+    })
+    .catch((err) => console.error(err));
+
+  // Generate view
+  document.getElementById('genBtn').addEventListener('click', generateManualQR);
+  document.getElementById('genClearBtn').addEventListener('click', clearManualQR);
+
+  // History view toolbar
+  document.getElementById('selectAllBtn').addEventListener('click', () => selectAllHistory(true));
+  document.getElementById('clearSelectionBtn').addEventListener('click', () => selectAllHistory(false));
+
+  document.getElementById('exportSelectedBtn').addEventListener('click', () => {
+    const ids = getSelectedHistoryIds();
+    if (!ids.length) return alert('No items selected.');
+    const arr = loadHistory().filter(x => ids.includes(x.id));
+    exportEntries(arr);
+  });
+
+  document.getElementById('deleteSelectedBtn').addEventListener('click', () => {
+    const ids = getSelectedHistoryIds();
+    if (!ids.length) return alert('No items selected.');
+    if (confirm(`Delete ${ids.length} selected item(s)?`)) {
+      deleteHistoryByIds(ids);
+      renderHistory();
+    }
+  });
+
+  document.getElementById('clearAllBtn').addEventListener('click', () => {
+    const arr = loadHistory();
+    if (!arr.length) return alert('History is empty.');
+    if (confirm('Delete ALL history?')) {
+      clearAllHistory();
+      renderHistory();
+    }
+  });
 });
 </script>
 </body>
