@@ -14,11 +14,15 @@
   <meta name="apple-mobile-web-app-title" content="Invoice Scanner">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
 
-  <!-- OFFLINE QR library -->
-  <script src="assets/qrcode.min.js"></script>
+  <!-- QR generator (qrcode-generator, MIT). Proper UTF-8 WITHOUT a BOM, unlike the old qrcode.min.js -->
+  <script src="assets/qrcode-generator.js"></script>
 
-  <!-- ZXing PDF417 (online; vendor locally if you want fully offline) -->
-  <script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+  <!-- zxing-wasm reader (ZXing-C++ as WebAssembly, MIT/Apache-2.0), vendored locally: no CDN, works offline.
+       Replaces the unmaintained zxing-js. The matching assets/zxing_reader.wasm is loaded at start-up. -->
+  <script src="assets/zxing-wasm-reader.iife.js"></script>
+
+  <!-- Pure logic (HUB-3 validation, IBAN / reference checks, EPC payload). Also unit-tested in Node: see tests/ -->
+  <script src="assets/hub3.js"></script>
 
   <style>
     /* Minimal layout helpers (won't fight your styles.css) */
@@ -129,6 +133,18 @@
     .modal h2 { margin: 0 0 0.75rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.92rem; white-space: pre-wrap; word-break: break-word; }
     .divider { height: 1px; background: rgba(0,0,0,0.12); margin: 0.75rem 0; }
+
+    /* QR: white box so the quiet zone is always white, whatever the page background is */
+    .qr-box { display: inline-block; background: #fff; padding: 12px; border-radius: 12px; line-height: 0; }
+    .qr-box svg { display: block; width: min(300px, 78vw); height: auto; shape-rendering: crispEdges; }
+    .scan-error { color: #b00; font-size: 0.95rem; margin: 0.5rem 0; }
+
+    /* Validation messages under the scan result */
+    #validation:empty { display: none; }
+    #validation { margin: 0 0 1rem; }
+    .vmsg { border-radius: 12px; padding: 0.6rem 0.8rem; margin: 0.4rem 0; font-size: 0.95rem; line-height: 1.35; }
+    .vmsg.warn { background: #fff4e5; border: 1px solid #f5b041; color: #7a4a00; }
+    .vmsg.ok { background: #eaf7ee; border: 1px solid #7fcf96; color: #1d5a31; }
   </style>
 </head>
 
@@ -148,13 +164,15 @@
         </div>
 
         <p class="hint">Position the barcode in front of the camera</p>
-        <video id="video" width="300" height="200" style="display:none;"></video>
+        <div id="scanError" class="scan-error" role="alert" style="display:none;"></div>
+        <video id="video" width="300" height="200" playsinline muted autoplay style="display:none;"></video>
         <input type="file" id="imageInput" accept="image/*" style="display:none">
       </section>
 
       <!-- Results Page -->
       <section class="container" id="results-page" style="display:none;">
         <h1 class="title">Scan Result</h1>
+        <div id="validation" role="status"></div>
         <div id="result-fields"></div>
 
         <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
@@ -254,6 +272,7 @@
    Helpers: View switching
 ========================================================= */
 function switchView(viewId) {
+  if (viewId !== 'scanView') stopScanning();   // don't leave the camera running in the background
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(viewId).classList.add('active');
 
@@ -353,37 +372,35 @@ function closeModal() {
 /* =========================================================
    QR rendering (supports both common APIs)
 ========================================================= */
-function renderQrInto(hostEl, text, size=300) {
+function renderQrInto(hostEl, text /*, size (now controlled by CSS .qr-box svg) */) {
   hostEl.innerHTML = "";
+  try {
+    if (typeof qrcode !== "function") throw new Error("QR library not loaded (assets/qrcode-generator.js)");
 
-  if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
-    const canvas = document.createElement("canvas");
-    hostEl.appendChild(canvas);
-    window.QRCode.toCanvas(canvas, text, { errorCorrectionLevel: "M", width: size }, (err) => {
-      if (err) hostEl.innerHTML = "<p style='color:#c00'>QR error</p>";
-    });
-    return;
+    // Encode as UTF-8 WITHOUT a BOM. The old qrcode.min.js silently prepended EF BB BF whenever the text
+    // contained any non-ASCII character (Č, Ć, Š, Đ, Ž ...), so an EPC payload no longer began with "BCD".
+    qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"];
+
+    const qr = qrcode(0, "M");              // 0 = pick the smallest version that fits (up to 40)
+    qr.addData(text, "Byte");
+    qr.make();
+
+    const box = document.createElement("div");
+    box.className = "qr-box";
+    box.innerHTML = qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true }); // 4-module quiet zone
+    hostEl.appendChild(box);
+  } catch (err) {
+    console.error(err);
+    const p = document.createElement("p");
+    p.style.color = "#c00";
+    p.textContent = "Could not generate QR: " + (err && err.message ? err.message : err);
+    hostEl.appendChild(p);
   }
-
-  if (window.QRCode && typeof window.QRCode === "function") {
-    new window.QRCode(hostEl, {
-      text,
-      width: size,
-      height: size,
-      correctLevel: (window.QRCode.CorrectLevel ? window.QRCode.CorrectLevel.M : undefined)
-    });
-    return;
-  }
-
-  hostEl.innerHTML = "<p style='color:#c00'>QR library not loaded (assets/qrcode.min.js)</p>";
 }
 
 /* =========================================================
    SCAN logic (camera + upload) + HUB 3A reference fix
 ========================================================= */
-let codeReader;
-let selectedDeviceId;
-let isScanning = false;
 
 function showScanningPage() {
   document.getElementById('scanning-page').style.display = 'block';
@@ -394,7 +411,7 @@ function showResultsPage(resultText, metaForHistory = null) {
   document.getElementById('scanning-page').style.display = 'none';
   document.getElementById('results-page').style.display = 'block';
 
-  const rawDataLines = resultText.split('\n');
+  const rawDataLines = resultText.replace(/\r/g, '').split('\n');
   const resultFields = document.getElementById('result-fields');
   resultFields.innerHTML = '';
 
@@ -436,7 +453,11 @@ function showResultsPage(resultText, metaForHistory = null) {
     if (label === 'Recipient\'s Address (City and postal code)') { parsedFields.address2 = line; }
     if (label === 'Recipient\'s IBAN') { qrData.iban = line; parsedFields.iban = line; }
     if (label === 'Payment Model') { parsedFields.model = line; }
-    if (label === 'Reference') { qrData.reference = fullReference; parsedFields.reference = fullReference; }
+    if (label === 'Reference') {
+      // An ISO 11649 "RF..." reference is sent on its own (structured field); HR models keep "model reference".
+      qrData.reference = isRfReference(paymentReference) ? paymentReference : fullReference;
+      parsedFields.reference = fullReference;
+    }
 
     const fieldContainer = document.createElement('div');
     fieldContainer.className = 'result-field';
@@ -463,6 +484,9 @@ function showResultsPage(resultText, metaForHistory = null) {
   // Store visible data for "Copy All"
   resultFields.dataset.visibleData = visibleDataLines.join('\n');
 
+  // Sanity checks: IBAN checksum, payment model / reference control digits, header, currency
+  renderValidation(rawDataLines);
+
   // Generate EPC + QR
   let epcPayload = "";
   if (qrData.name && qrData.iban) {
@@ -485,6 +509,29 @@ function showResultsPage(resultText, metaForHistory = null) {
   });
 }
 
+function renderValidation(lines) {
+  const host = document.getElementById('validation');
+  host.innerHTML = '';
+  const add = (cls, text) => {
+    const d = document.createElement('div');
+    d.className = 'vmsg ' + cls;
+    d.textContent = text;
+    host.appendChild(d);
+  };
+  let result;
+  try {
+    result = validateHub3(lines);
+  } catch (err) {            // validation must never block showing the scan result
+    console.error(err);
+    return;
+  }
+  result.warnings.forEach(w => add('warn', '⚠ ' + w));
+  if (!result.warnings.length) {
+    const ref = result.summary.referenceStatus === 'ok' ? 'payment reference' : null;
+    add('ok', '✓ IBAN checksum is valid' + (ref ? ' and the ' + ref + ' control digit matches.' : '.'));
+  }
+}
+
 function labelForLine(index) {
   switch (index) {
     case 2: return 'Amount';
@@ -495,20 +542,6 @@ function labelForLine(index) {
     case 10: return 'Payment Model';
     case 11: return 'Reference';
     default: return null;
-  }
-}
-
-function formatAmount(amountString) {
-  // 15-digit cents
-  if (amountString.length !== 15) return amountString;
-
-  const cents = parseInt(amountString, 10);
-  if (isNaN(cents)) return amountString;
-
-  const euros = cents / 100.0;
-  return {
-    display: euros.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-    copy: euros.toFixed(2) // IMPORTANT: "5.06" (dot), for EPC payload
   }
 }
 
@@ -524,72 +557,175 @@ function copyToClipboard(text) {
   });
 }
 
-function fixEncoding(text) {
-  const map = {
-    'ÄŒ': 'Č','Ä': 'č','Ä†': 'Ć','Ä‡': 'ć',
-    'Ä': 'Đ','Ä‘': 'đ','Å ': 'Š','Å¡': 'š',
-    'Å½': 'Ž','Å¾': 'ž'
-  };
-  const keys = Object.keys(map);
-  const regex = new RegExp(keys.join('|'), 'g');
-  return text.replace(regex, m => map[m]).toUpperCase();
+function showScanError(message) {
+  const el = document.getElementById('scanError');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.display = message ? 'block' : 'none';
 }
 
-// EPC payload (NO extra newline at end)
-function buildEpcPayload({ name, iban, amount, reference }) {
-  const lines = [
-    "BCD",
-    "001",
-    "1",
-    "SCT",
-    "",             // BIC optional
-    name || "",
-    iban || "",
-    amount ? `EUR${amount}` : "",
-    "",             // purpose code optional
-    reference || "",
-    ""              // note to originator optional
-  ];
-  return lines.join("\n");
+/* ---------- barcode engine: zxing-wasm (ZXing-C++ compiled to WebAssembly) ---------- */
+const SCAN_OPTIONS = {
+  formats: ['PDF417'],
+  tryHarder: true,
+  tryRotate: true,
+  tryInvert: true,
+  tryDownscale: true,
+  maxNumberOfSymbols: 1
+};
+const CAMERA_MAX_WIDTH = 1600;       // frames are downscaled to this width before decoding
+const IMAGE_MAX_SIDES = [2400, 4096]; // uploaded photos: try a moderate size first, then a larger one
+const SCAN_INTERVAL_MS = 150;
+
+let isScanning = false;
+let scanStream = null;
+let scanTimer = null;
+
+function scannerAvailable() {
+  return typeof ZXingWASM === 'object' && typeof ZXingWASM.readBarcodes === 'function';
 }
 
-function startScanning() {
+// ImageData -> normalised HUB-3 text, or null if no valid PDF417 was found
+async function readHub3(imageData) {
+  const results = await ZXingWASM.readBarcodes(imageData, SCAN_OPTIONS);
+  const hit = results.find(r => r.isValid);
+  if (!hit) return null;
+  return fixEncoding(decodeBytes(hit.bytes, hit.text));   // HUB-3 is UTF-8: use raw bytes when possible
+}
+
+function stopScanning() {
+  isScanning = false;
+  clearTimeout(scanTimer);
+  scanTimer = null;
+  if (scanStream) {
+    scanStream.getTracks().forEach(t => t.stop());
+    scanStream = null;
+  }
+  const video = document.getElementById('video');
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+    video.style.display = 'none';
+  }
+}
+
+async function startScanning() {
   if (isScanning) return;
+  showScanError('');
+
+  if (!scannerAvailable()) {
+    showScanError('Scanner engine did not load (assets/zxing-wasm-reader.iife.js). Reload the page.');
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showScanError('Camera is not available here. The page must be opened over HTTPS (or localhost). You can still use "Upload image".');
+    return;
+  }
 
   isScanning = true;
   showScanningPage();
-  document.getElementById('video').style.display = 'block';
+  const video = document.getElementById('video');
+  video.style.display = 'block';
 
-  codeReader.decodeFromInputVideoDeviceContinuously(selectedDeviceId, 'video', (result, err) => {
-    if (result) {
-      codeReader.reset();
-      isScanning = false;
-      showResultsPage(fixEncoding(result.text), { raw: fixEncoding(result.text) });
+  try {
+    // Rear camera at HD: dense PDF417 barcodes are unreadable at 640x480.
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    if (!isScanning) { stopScanning(); return; }      // user left the tab while the permission prompt was open
+    video.srcObject = scanStream;
+    await video.play();
+  } catch (err) {
+    console.error(err);
+    stopScanning();
+    const name = err && err.name ? err.name : 'Error';
+    showScanError(
+      name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access for this site in the browser settings.' :
+      name === 'NotFoundError'   ? 'No camera found on this device. Use "Upload image" instead.' :
+      'Could not start the camera (' + name + '). You can still use "Upload image".'
+    );
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  const tick = async () => {
+    if (!isScanning) return;
+    try {
+      if (video.readyState >= 2 && video.videoWidth) {
+        const scale = Math.min(1, CAMERA_MAX_WIDTH / video.videoWidth);
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const text = await readHub3(ctx.getImageData(0, 0, canvas.width, canvas.height));
+        if (text && isScanning) {
+          stopScanning();
+          showResultsPage(text, { raw: text });
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn(err);
     }
-  });
+    if (isScanning) scanTimer = setTimeout(tick, SCAN_INTERVAL_MS);
+  };
+  tick();
 }
 
-function scanFromImageFile(file) {
-  const img = document.createElement('img');
-  img.style.display = 'none';
-  document.body.appendChild(img);
+// File -> ImageData, scaled so the longest side is at most maxSide (honours EXIF rotation where supported)
+async function imageFileToImageData(file, maxSide) {
+  let source, width, height, cleanup = () => {};
+  if (window.createImageBitmap) {
+    source = await createImageBitmap(file);
+    width = source.width; height = source.height;
+    cleanup = () => source.close && source.close();
+  } else {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    source = img; width = img.naturalWidth; height = img.naturalHeight;
+    cleanup = () => URL.revokeObjectURL(url);
+  }
+  try {
+    const scale = Math.min(1, maxSide / Math.max(width, height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  } finally {
+    cleanup();
+  }
+}
 
-  const reader = new FileReader();
-  reader.onload = () => {
-    img.src = reader.result;
-
-    codeReader.decodeFromImageElement(img)
-      .then(result => {
-        document.body.removeChild(img);
-        showResultsPage(fixEncoding(result.text), { raw: fixEncoding(result.text) });
-      })
-      .catch(err => {
-        document.body.removeChild(img);
-        alert('Barcode not detected in image');
-        console.error(err);
-      });
-  };
-  reader.readAsDataURL(file);
+async function scanFromImageFile(file) {
+  showScanError('');
+  if (!scannerAvailable()) {
+    showScanError('Scanner engine did not load (assets/zxing-wasm-reader.iife.js). Reload the page.');
+    return;
+  }
+  try {
+    let tried = new Set();
+    for (const side of IMAGE_MAX_SIDES) {
+      const imageData = await imageFileToImageData(file, side);
+      const key = imageData.width + 'x' + imageData.height;
+      if (tried.has(key)) continue;                  // image is smaller than this limit: same pixels again
+      tried.add(key);
+      const text = await readHub3(imageData);
+      if (text) {
+        showResultsPage(text, { raw: text });
+        return;
+      }
+    }
+    alert('Barcode not detected in image');
+  } catch (err) {
+    console.error(err);
+    alert('Could not read the image: ' + (err && err.message ? err.message : err));
+  }
 }
 
 /* =========================================================
@@ -785,34 +921,42 @@ window.addEventListener('load', function () {
     if (e.target.id === 'modalBackdrop') closeModal();
   });
 
-  // Scanner init
-  codeReader = new ZXing.BrowserPDF417Reader();
-  codeReader.getVideoInputDevices()
-    .then((videoInputDevices) => {
-      selectedDeviceId = videoInputDevices[0]?.deviceId;
+  // Scan buttons are wired FIRST and do not depend on camera enumeration or on the ZXing script:
+  // previously they were only attached inside getVideoInputDevices().then(...), so if that promise
+  // rejected (no camera, permission, insecure context) or ZXing failed to load, every scan button was dead.
+  document.getElementById('cameraScanBtn').addEventListener('click', () => startScanning());
+  document.getElementById('imageScanBtn').addEventListener('click', () => document.getElementById('imageInput').click());
 
-      // Buttons
-      document.getElementById('cameraScanBtn').addEventListener('click', () => startScanning());
-      document.getElementById('imageScanBtn').addEventListener('click', () => document.getElementById('imageInput').click());
+  document.getElementById('imageInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      stopScanning();
+      scanFromImageFile(file);
+      e.target.value = ''; // allow selecting same image again
+    }
+  });
 
-      document.getElementById('imageInput').addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          codeReader.reset();
-          isScanning = false;
-          scanFromImageFile(file);
-          e.target.value = ''; // allow selecting same image again
-        }
-      });
+  document.getElementById('scanAgainButton').addEventListener('click', () => startScanning());
 
-      document.getElementById('scanAgainButton').addEventListener('click', () => startScanning());
+  document.getElementById('copyAllButton').addEventListener('click', () => {
+    const visibleData = document.getElementById('result-fields').dataset.visibleData;
+    if (visibleData) copyToClipboard(visibleData);
+  });
 
-      document.getElementById('copyAllButton').addEventListener('click', () => {
-        const visibleData = document.getElementById('result-fields').dataset.visibleData;
-        if (visibleData) copyToClipboard(visibleData);
-      });
-    })
-    .catch((err) => console.error(err));
+  // Scanner init (guarded: a missing library must not break the rest of the page).
+  // The ~950 KB .wasm file is loaded from assets/ (not from a CDN) and warmed up now, so the first scan is fast.
+  if (!scannerAvailable()) {
+    showScanError('Scanner engine did not load (assets/zxing-wasm-reader.iife.js). Reload the page.');
+  } else {
+    const wasmUrl = new URL('assets/zxing_reader.wasm', document.baseURI).href;
+    ZXingWASM.prepareZXingModule({
+      overrides: { locateFile: (path, prefix) => path.endsWith('.wasm') ? wasmUrl : prefix + path },
+      fireImmediately: true
+    }).catch((err) => {
+      console.error(err);
+      showScanError('Scanner engine failed to start (' + (err && err.message ? err.message : err) + '). Reload the page.');
+    });
+  }
 
   // Generate view
   document.getElementById('genBtn').addEventListener('click', generateManualQR);
