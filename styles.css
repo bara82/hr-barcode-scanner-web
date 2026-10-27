@@ -1,11 +1,68 @@
+/* Theme: light is the default, dark follows the system unless the user picked one with the toggle.
+   index.html sets <html data-theme="light|dark"> (saved in localStorage). QR codes are NOT themed:
+   they are always black on white (see .qr-box) so they scan in both modes. */
+:root {
+  color-scheme: light;
+  --bg: #f2f2f7;
+  --card: #ffffff;
+  --text: #000000;
+  --muted: #8e8e93;
+  --border: #c6c6c8;
+  --border-soft: rgba(0, 0, 0, 0.12);
+  --border-ctl: rgba(0, 0, 0, 0.18);
+  --press: rgba(0, 0, 0, 0.05);
+  --accent: #007AFF;
+  --accent-hover: #0051d5;
+  --danger: #b00;
+  --shadow: rgba(0, 0, 0, 0.1);
+  --warn-bg: #fff4e5; --warn-border: #f5b041; --warn-text: #7a4a00;
+  --ok-bg: #eaf7ee;   --ok-border: #7fcf96;   --ok-text: #1d5a31;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #000000;
+    --card: #1c1c1e;
+    --text: #ffffff;
+    --muted: #98989f;
+    --border: #38383a;
+    --border-soft: rgba(255, 255, 255, 0.16);
+    --border-ctl: rgba(255, 255, 255, 0.28);
+    --press: rgba(255, 255, 255, 0.1);
+    --accent: #0a84ff;
+    --accent-hover: #409cff;
+    --danger: #ff6961;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --warn-bg: #3a2a10; --warn-border: #9a6a1c; --warn-text: #ffd699;
+    --ok-bg: #12301c;   --ok-border: #2f7a47;   --ok-text: #a8e6bc;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --card: #1c1c1e;
+  --text: #ffffff;
+  --muted: #98989f;
+  --border: #38383a;
+  --border-soft: rgba(255, 255, 255, 0.16);
+  --border-ctl: rgba(255, 255, 255, 0.28);
+  --press: rgba(255, 255, 255, 0.1);
+  --accent: #0a84ff;
+  --accent-hover: #409cff;
+  --danger: #ff6961;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --warn-bg: #3a2a10; --warn-border: #9a6a1c; --warn-text: #ffd699;
+  --ok-bg: #12301c;   --ok-border: #2f7a47;   --ok-text: #a8e6bc;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
-  background-color: #f2f2f7;
-  color: #000;
+  background-color: var(--bg);
+  color: var(--text);
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
@@ -17,7 +74,7 @@ body {
   margin: 0 auto;
   padding: 0;
   min-height: 100vh;
-  background-color: #f2f2f7;
+  background-color: var(--bg);
 }
 
 .container {
@@ -31,7 +88,7 @@ body {
   font-weight: 700;
   line-height: 41px;
   letter-spacing: 0.37px;
-  color: #000;
+  color: var(--text);
   margin: 0 0 8px 0;
   padding: 0;
 }
@@ -41,7 +98,7 @@ body {
   font-weight: 400;
   line-height: 22px;
   letter-spacing: -0.41px;
-  color: #8e8e93;
+  color: var(--muted);
   margin: 0 0 24px 0;
 }
 
@@ -62,24 +119,24 @@ body {
 
 #result-fields {
   margin: 20px 0;
-  background-color: #ffffff;
+  background-color: var(--card);
   border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 3px var(--shadow);
 }
 
 .result-field {
   display: flex;
   flex-direction: column;
   padding: 12px 16px;
-  border-bottom: 0.5px solid #c6c6c8;
+  border-bottom: 0.5px solid var(--border);
   cursor: pointer;
   user-select: none;
   transition: background-color 0.2s;
 }
 
 .result-field:active {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: var(--press);
 }
 
 .result-field:last-child {
@@ -89,7 +146,7 @@ body {
 .result-label {
   font-size: 13px;
   font-weight: 400;
-  color: #8e8e93;
+  color: var(--muted);
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: -0.08px;
@@ -100,7 +157,7 @@ body {
   font-size: 17px;
   font-weight: 400;
   line-height: 22px;
-  color: #000;
+  color: var(--text);
   padding: 0;
   background-color: transparent;
   border-radius: 0;
@@ -118,7 +175,7 @@ body {
   line-height: 22px;
   letter-spacing: -0.41px;
   color: #ffffff;
-  background-color: #007AFF;
+  background-color: var(--accent);
   border: none;
   border-radius: 14px;
   cursor: pointer;
@@ -137,21 +194,24 @@ body {
 }
 
 .button-large:hover {
-  background-color: #0051d5;
+  background-color: var(--accent-hover);
 }
 
+.button-secondary,
 #scanAgainButton {
   background-color: transparent;
-  color: #007AFF;
-  border: 1.5px solid #007AFF;
+  color: var(--accent);
+  border: 1.5px solid var(--accent);
   margin-top: 16px;
 }
 
+.button-secondary:active,
 #scanAgainButton:active {
   background-color: rgba(0, 122, 255, 0.1);
   opacity: 1;
 }
 
+.button-secondary:hover,
 #scanAgainButton:hover {
   background-color: rgba(0, 122, 255, 0.05);
 }
@@ -163,7 +223,7 @@ body {
 .footer p {
   font-size: 13px;
   font-weight: 400;
-  color: #8e8e93;
+  color: var(--muted);
   margin: 0;
   line-height: 18px;
 }

@@ -4,6 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Invoice Scanner</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f2f2f7">
+  <!-- Apply the saved light/dark choice before first paint (no flash). Without a choice the system setting wins. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
 
   <!-- Your existing stylesheet (kept) -->
   <link rel="stylesheet" href="styles.css">
@@ -24,6 +35,9 @@
   <!-- Pure logic (HUB-3 validation, IBAN / reference checks, EPC payload). Also unit-tested in Node: see tests/ -->
   <script src="assets/hub3.js"></script>
 
+  <!-- QR module matrix -> real PNG bytes (for long-press "save image" and PNG export). Unit-tested in Node. -->
+  <script src="assets/qrimage.js"></script>
+
   <style>
     /* Minimal layout helpers (won't fight your styles.css) */
     .view { display: none; padding-bottom: 88px; }
@@ -34,8 +48,8 @@
       bottom: 0; left: 0; right: 0;
       height: 68px;
       display: flex;
-      background: #fff;
-      border-top: 1px solid rgba(0,0,0,0.12);
+      background: var(--card);
+      border-top: 1px solid var(--border-soft);
       z-index: 9999;
       padding-bottom: env(safe-area-inset-bottom);
     }
@@ -43,6 +57,7 @@
       flex: 1;
       border: none;
       background: transparent;
+      color: var(--text);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -55,6 +70,7 @@
     .bottom-nav button.active { opacity: 1; font-weight: 700; }
 
     .nav-ico { font-size: 18px; line-height: 1; }
+    .bottom-nav button.theme-btn { flex: 0 0 64px; }
 
     .toolbar {
       display:flex;
@@ -67,21 +83,24 @@
     .toolbar .left, .toolbar .right { display:flex; gap:0.5rem; align-items:center; flex-wrap: wrap; }
 
     .small-btn {
-      border: 1px solid rgba(0,0,0,0.18);
-      background: #fff;
+      border: 1px solid var(--border-ctl);
+      background: var(--card);
+      color: var(--text);
       padding: 0.45rem 0.65rem;
       border-radius: 10px;
       font-size: 0.9rem;
       cursor: pointer;
     }
-    .small-btn.danger { border-color: rgba(200,0,0,0.35); color: #b00; }
+    .small-btn.danger { border-color: var(--danger); color: var(--danger); }
 
     .input {
       width: 100%;
       box-sizing: border-box;
       padding: 0.8rem 0.9rem;
       border-radius: 12px;
-      border: 1px solid rgba(0,0,0,0.18);
+      border: 1px solid var(--border-ctl);
+      background: var(--card);
+      color: var(--text);
       font-size: 1rem;
       margin: 0.35rem 0 0.75rem;
     }
@@ -89,7 +108,7 @@
 
     /* History list */
     .history-item {
-      border: 1px solid rgba(0,0,0,0.12);
+      border: 1px solid var(--border-soft);
       border-radius: 14px;
       padding: 0.75rem;
       margin: 0.6rem 0;
@@ -106,7 +125,7 @@
 
     .checkbox {
       width: 20px; height: 20px;
-      accent-color: #000;
+      accent-color: var(--accent);
     }
 
     /* Simple modal */
@@ -125,26 +144,31 @@
       width: min(720px, 96vw);
       max-height: 86vh;
       overflow: auto;
-      background: #fff;
+      background: var(--card);
+      color: var(--text);
       border-radius: 18px;
       padding: 1rem;
       box-shadow: 0 10px 35px rgba(0,0,0,0.25);
     }
     .modal h2 { margin: 0 0 0.75rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.92rem; white-space: pre-wrap; word-break: break-word; }
-    .divider { height: 1px; background: rgba(0,0,0,0.12); margin: 0.75rem 0; }
+    .divider { height: 1px; background: var(--border-soft); margin: 0.75rem 0; }
 
-    /* QR: white box so the quiet zone is always white, whatever the page background is */
+    /* QR codes are never themed: always black on white (the PNG / SVG itself has a white 4-module quiet zone,
+       and this box keeps a white frame in dark mode), otherwise they would not scan. */
     .qr-box { display: inline-block; background: #fff; padding: 12px; border-radius: 12px; line-height: 0; }
-    .qr-box svg { display: block; width: min(300px, 78vw); height: auto; shape-rendering: crispEdges; }
-    .scan-error { color: #b00; font-size: 0.95rem; margin: 0.5rem 0; }
+    .qr-box svg, .qr-box img { display: block; width: min(300px, 78vw); height: auto; }
+    .qr-box svg { shape-rendering: crispEdges; }
+    .qr-box img { -webkit-touch-callout: default; user-select: auto; -webkit-user-select: auto; }
+    .qr-actions { margin-top: 0.6rem; }
+    .scan-error { color: var(--danger); font-size: 0.95rem; margin: 0.5rem 0; }
 
     /* Validation messages under the scan result */
     #validation:empty { display: none; }
     #validation { margin: 0 0 1rem; }
     .vmsg { border-radius: 12px; padding: 0.6rem 0.8rem; margin: 0.4rem 0; font-size: 0.95rem; line-height: 1.35; }
-    .vmsg.warn { background: #fff4e5; border: 1px solid #f5b041; color: #7a4a00; }
-    .vmsg.ok { background: #eaf7ee; border: 1px solid #7fcf96; color: #1d5a31; }
+    .vmsg.warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); }
+    .vmsg.ok { background: var(--ok-bg); border: 1px solid var(--ok-border); color: var(--ok-text); }
   </style>
 </head>
 
@@ -177,7 +201,7 @@
 
         <h2 class="title" style="margin-top:2rem;">Revolut / SEPA QR</h2>
         <div id="qr"></div>
-        <p class="hint">Scan in Revolut → Payments → QR</p>
+        <p class="hint">Scan in Revolut → Payments → QR. Long-press the QR (or use the button) to save it as a picture.</p>
 
         <button class="button-large" id="copyAllButton">Copy All</button>
         <button class="button-large" id="scanAgainButton">Scan Another</button>
@@ -217,7 +241,7 @@
     <section id="historyView" class="view">
       <section class="container">
         <h1 class="title">History</h1>
-        <p class="hint">Stored only on this device (localStorage). Newest item is on top.</p>
+        <p class="hint">Stored only on this device (localStorage). Newest item is on top. "Export PNG" saves just the QR code as an image.</p>
 
         <div class="toolbar">
           <div class="left">
@@ -226,6 +250,7 @@
           </div>
           <div class="right">
             <button class="small-btn" id="exportSelectedBtn">Export selected</button>
+            <button class="small-btn" id="exportSelectedPngBtn">PNG selected</button>
             <button class="small-btn danger" id="deleteSelectedBtn">Delete selected</button>
           </div>
         </div>
@@ -254,6 +279,10 @@
       <div class="nav-ico">🕘</div>
       <div>History</div>
     </button>
+    <button id="themeBtn" class="theme-btn" type="button" aria-label="Switch dark / light mode">
+      <div class="nav-ico" id="themeIco">🌙</div>
+      <div id="themeLabel">Dark</div>
+    </button>
   </nav>
 
   <!-- ======================= MODAL ======================= -->
@@ -269,6 +298,31 @@
 
 <script>
 /* =========================================================
+   Theme: light / dark toggle (saved in localStorage, default = system setting)
+========================================================= */
+function effectiveTheme() {
+  const t = document.documentElement.getAttribute('data-theme');
+  if (t === 'light' || t === 'dark') return t;
+  return (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+}
+
+function updateThemeUi() {
+  const dark = effectiveTheme() === 'dark';
+  // the button shows what a tap will switch TO
+  document.getElementById('themeIco').textContent = dark ? '☀️' : '🌙';
+  document.getElementById('themeLabel').textContent = dark ? 'Light' : 'Dark';
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', dark ? '#000000' : '#f2f2f7');
+}
+
+function toggleTheme() {
+  const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('theme', next); } catch (e) {}
+  updateThemeUi();
+}
+
+/* =========================================================
    Helpers: View switching
 ========================================================= */
 function switchView(viewId) {
@@ -276,7 +330,7 @@ function switchView(viewId) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.getElementById(viewId).classList.add('active');
 
-  document.querySelectorAll('.bottom-nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.bottom-nav button[data-view]').forEach(b => b.classList.remove('active'));
   document.querySelector(`.bottom-nav button[data-view="${viewId}"]`).classList.add('active');
 
   if (viewId === 'historyView') renderHistory();
@@ -329,7 +383,10 @@ function clearAllHistory() {
 
 /* Export helpers */
 function downloadText(filename, text, mime = 'application/json') {
-  const blob = new Blob([text], { type: mime });
+  downloadBlob(filename, new Blob([text], { type: mime }));
+}
+
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -370,25 +427,93 @@ function closeModal() {
 }
 
 /* =========================================================
-   QR rendering (supports both common APIs)
+   QR rendering + saving as PNG
 ========================================================= */
-function renderQrInto(hostEl, text /*, size (now controlled by CSS .qr-box svg) */) {
+function makeQr(text) {
+  if (typeof qrcode !== "function") throw new Error("QR library not loaded (assets/qrcode-generator.js)");
+  // Encode as UTF-8 WITHOUT a BOM. The old qrcode.min.js silently prepended EF BB BF whenever the text
+  // contained any non-ASCII character (Č, Ć, Š, Đ, Ž ...), so an EPC payload no longer began with "BCD".
+  qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"];
+  const qr = qrcode(0, "M");              // 0 = pick the smallest version that fits (up to 40)
+  qr.addData(text, "Byte");
+  qr.make();
+  return qr;
+}
+
+// text -> PNG bytes (black on white, 4-module quiet zone, >= 600 px)
+function qrPngBytes(text) {
+  return qrToPng(makeQr(text));
+}
+
+function qrFileName(label, ts) {
+  const d = new Date(ts || Date.now());
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  const slug = fileSlug(label);
+  return `qr-${slug ? slug + '-' : ''}${stamp}.png`;
+}
+
+// files: [{name, bytes}]. On phones the share sheet is used (it has "Save Image" / "Save to Files");
+// everywhere else (or if sharing is refused) the PNGs are downloaded.
+async function savePngs(files) {
+  if (!files.length) return;
+  const blobs = files.map(f => new Blob([f.bytes], { type: 'image/png' }));
+  const coarse = window.matchMedia && matchMedia('(pointer: coarse)').matches;
+  if (coarse && typeof File === 'function' && navigator.canShare && navigator.share) {
+    try {
+      const shareFiles = files.map((f, i) => new File([blobs[i]], f.name, { type: 'image/png' }));
+      if (navigator.canShare({ files: shareFiles })) {
+        await navigator.share({ files: shareFiles });
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;   // user closed the share sheet
+      console.warn('share failed, downloading instead', err);
+    }
+  }
+  for (let i = 0; i < files.length; i++) {
+    downloadBlob(files[i].name, blobs[i]);
+    if (i < files.length - 1) await new Promise(r => setTimeout(r, 400));   // browsers drop rapid-fire downloads
+  }
+}
+
+/* opts.name: text for the PNG file name (e.g. the recipient) */
+function renderQrInto(hostEl, text, opts) {
+  opts = opts || {};
   hostEl.innerHTML = "";
   try {
-    if (typeof qrcode !== "function") throw new Error("QR library not loaded (assets/qrcode-generator.js)");
-
-    // Encode as UTF-8 WITHOUT a BOM. The old qrcode.min.js silently prepended EF BB BF whenever the text
-    // contained any non-ASCII character (Č, Ć, Š, Đ, Ž ...), so an EPC payload no longer began with "BCD".
-    qrcode.stringToBytes = qrcode.stringToBytesFuncs["UTF-8"];
-
-    const qr = qrcode(0, "M");              // 0 = pick the smallest version that fits (up to 40)
-    qr.addData(text, "Byte");
-    qr.make();
+    const qr = makeQr(text);
 
     const box = document.createElement("div");
     box.className = "qr-box";
-    box.innerHTML = qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true }); // 4-module quiet zone
     hostEl.appendChild(box);
+
+    let png = null;
+    try {
+      png = qrToPng(qr);
+    } catch (e) {
+      console.warn("PNG rendering failed, falling back to SVG", e);
+    }
+
+    if (png) {
+      // A real <img>: long-press (phone) / right-click (desktop) offers "Save image".
+      const img = document.createElement("img");
+      img.alt = "QR code";
+      img.src = pngToDataUrl(png);
+      box.appendChild(img);
+
+      const actions = document.createElement("div");
+      actions.className = "qr-actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "small-btn";
+      btn.textContent = "💾 Save QR as PNG";
+      btn.addEventListener("click", () => savePngs([{ name: qrFileName(opts.name), bytes: png }]));
+      actions.appendChild(btn);
+      hostEl.appendChild(actions);
+    } else {
+      box.innerHTML = qr.createSvgTag({ cellSize: 1, margin: 4, scalable: true }); // 4-module quiet zone
+    }
   } catch (err) {
     console.error(err);
     const p = document.createElement("p");
@@ -491,7 +616,7 @@ function showResultsPage(resultText, metaForHistory = null) {
   let epcPayload = "";
   if (qrData.name && qrData.iban) {
     epcPayload = buildEpcPayload(qrData);
-    renderQrInto(document.getElementById('qr'), epcPayload, 300);
+    renderQrInto(document.getElementById('qr'), epcPayload, { name: qrData.name });
   } else {
     document.getElementById('qr').innerHTML = "";
   }
@@ -590,7 +715,8 @@ async function readHub3(imageData) {
   const results = await ZXingWASM.readBarcodes(imageData, SCAN_OPTIONS);
   const hit = results.find(r => r.isValid);
   if (!hit) return null;
-  return fixEncoding(decodeBytes(hit.bytes, hit.text));   // HUB-3 is UTF-8: use raw bytes when possible
+  // Decode the raw bytes ourselves (UTF-8 per spec, but legacy windows-1250 barcodes exist): see decodeBytes()
+  return fixEncoding(decodeBytes(hit.bytes, hit.text, hit.hasECI));
 }
 
 function stopScanning() {
@@ -738,7 +864,7 @@ function generateManualQR() {
     return;
   }
   const host = document.getElementById('genQr');
-  renderQrInto(host, text, 300);
+  renderQrInto(host, text, { name: 'manual' });
 
   const preview = document.getElementById('genPayloadPreview');
   preview.textContent = text;
@@ -798,6 +924,7 @@ function renderHistory() {
         <button class="small-btn" data-action="open" data-id="${item.id}">Open</button>
         <button class="small-btn" data-action="copy" data-id="${item.id}">Copy payload</button>
         <button class="small-btn" data-action="export" data-id="${item.id}">Export</button>
+        ${item.payload ? `<button class="small-btn" data-action="png" data-id="${item.id}">Export PNG</button>` : ''}
         <button class="small-btn danger" data-action="delete" data-id="${item.id}">Delete</button>
       </div>
     `;
@@ -819,6 +946,7 @@ function renderHistory() {
     if (action === 'open') openHistoryItem(item);
     if (action === 'copy') copyToClipboard(item.payload || '');
     if (action === 'export') exportEntries([item]);
+    if (action === 'png') exportQrPngs([item]);
     if (action === 'delete') {
       if (confirm('Delete this history item?')) {
         deleteHistoryByIds([id]);
@@ -826,6 +954,33 @@ function renderHistory() {
       }
     }
   };
+}
+
+// label used in PNG file names: the recipient for scans, the start of the text for manual QRs
+function historyQrLabel(item) {
+  return (item.fields && item.fields.recipient) || (item.type === 'manual' ? 'manual' : item.title) || '';
+}
+
+// history items -> only the QR code as PNG file(s)
+async function exportQrPngs(items) {
+  const files = [];
+  for (const item of items) {
+    if (!item.payload) continue;
+    try {
+      files.push({ name: qrFileName(historyQrLabel(item), item.ts), bytes: qrPngBytes(item.payload) });
+    } catch (err) {
+      console.error(err);
+      alert('Could not create a QR for "' + (item.title || 'item') + '": ' + (err && err.message ? err.message : err));
+    }
+  }
+  if (!files.length) return;
+  // identical names (same recipient + minute) must not overwrite each other
+  const seen = {};
+  for (const f of files) {
+    const n = seen[f.name] = (seen[f.name] || 0) + 1;
+    if (n > 1) f.name = f.name.replace(/\.png$/, `-${n}.png`);
+  }
+  await savePngs(files);
 }
 
 function openHistoryItem(item) {
@@ -873,7 +1028,7 @@ function openHistoryItem(item) {
 
   // render QR after modal is visible
   const host = document.getElementById(bodyId);
-  renderQrInto(host, item.payload || '', 300);
+  renderQrInto(host, item.payload || '', { name: historyQrLabel(item) });
 
   document.getElementById('modalCopyBtn').onclick = () => copyToClipboard(item.payload || '');
   document.getElementById('modalExportBtn').onclick = () => exportEntries([item]);
@@ -911,9 +1066,17 @@ function escapeHtml(str) {
 ========================================================= */
 window.addEventListener('load', function () {
   // Tabs
-  document.querySelectorAll('.bottom-nav button').forEach(btn => {
+  document.querySelectorAll('.bottom-nav button[data-view]').forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
+
+  // Dark / light toggle
+  updateThemeUi();
+  document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+  if (window.matchMedia) {
+    const mq = matchMedia('(prefers-color-scheme: dark)');
+    (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(updateThemeUi);
+  }
 
   // Modal
   document.getElementById('modalCloseBtn').addEventListener('click', closeModal);
@@ -971,6 +1134,12 @@ window.addEventListener('load', function () {
     if (!ids.length) return alert('No items selected.');
     const arr = loadHistory().filter(x => ids.includes(x.id));
     exportEntries(arr);
+  });
+
+  document.getElementById('exportSelectedPngBtn').addEventListener('click', () => {
+    const ids = getSelectedHistoryIds();
+    if (!ids.length) return alert('No items selected.');
+    exportQrPngs(loadHistory().filter(x => ids.includes(x.id)));
   });
 
   document.getElementById('deleteSelectedBtn').addEventListener('click', () => {

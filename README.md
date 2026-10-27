@@ -14,6 +14,14 @@ After a scan the app also checks the data and shows a warning if something looks
 
 Other payment models are not verified. Always double check the data before paying.
 
+## Dark / light mode and saving the QR
+
+- The moon / sun button in the bottom bar switches between dark and light mode. Without a choice the app follows the system setting; the choice is remembered on the device. QR codes are never themed: they are always black on white with the standard 4-module white border, so they scan in both modes.
+- The QR code is a real PNG image: long-press it on a phone (or right-click on a computer) and choose "Save image", or use the **Save QR as PNG** button. On phones the button opens the share sheet (Save Image / Save to Files), elsewhere it downloads the file.
+- In History, **Export PNG** (per entry) and **PNG selected** save only the QR code as PNG, nothing else.
+
+The PNG is written by `assets/qrimage.js` (no canvas needed), covered by `tests/qrimage.test.js`.
+
 ## Example
 
 Example scan of a barcode from the [HUB-3 specification](https://hub.hr/sites/default/files/inline-files/2DBK_EUR_Uputa_0.pdf):
@@ -31,4 +39,4 @@ npm install
 npm test
 ```
 
-`tests/hub3.test.js` is dependency-free. `tests/roundtrip.test.js` renders a real HUB-3 PDF417, decodes it, builds the EPC payload, renders the QR and decodes that again, with Croatian diacritics.
+`tests/hub3.test.js` is dependency-free; `tests/qrimage.test.js` checks that the saved PNG is valid and scans back to the exact payload. `tests/roundtrip.test.js` renders a real HUB-3 PDF417, decodes it, builds the EPC payload, renders the QR and decodes that again, with Croatian diacritics.
